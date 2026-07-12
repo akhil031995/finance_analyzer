@@ -1,0 +1,24 @@
+{
+    "name": "akhil/finance-analyzer",
+    "description": "Self-hosted personal finance tracker with CSV statement import, rule-based tagging, net-worth ladder and Telegram summaries",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.3",
+        "slim/slim": "^4.14",
+        "slim/psr7": "^1.7",
+        "php-di/php-di": "^7.0",
+        "guzzlehttp/guzzle": "^7.9",
+        "vlucas/phpdotenv": "^5.6",
+        "ramsey/uuid": "^4.7"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true
+    }
+}

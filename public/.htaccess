@@ -1,0 +1,5 @@
+# Route everything that isn't a real file/directory through the Slim front controller
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]

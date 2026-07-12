@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+data
+storage/uploads
+bank_statements
+.claude
+node_modules
+*.log
+README.md

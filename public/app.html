@@ -1,0 +1,1867 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finance Analyzer</title>
+<!-- Tailwind Play CDN for now; vendored build ships with the dashboard milestone -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: { colors: {
+    ink:   { 900:'#0b1120', 800:'#111a2e', 700:'#1a2540', 600:'#243354' },
+    mint:  { 400:'#34d399', 500:'#10b981' },
+  }}}
+};
+</script>
+<style>
+  dialog::backdrop { background: rgba(4, 8, 20, .75); backdrop-filter: blur(2px); }
+
+  /* Global busy veil. A *modal* <dialog> lives in the top layer, so it covers
+     any modal already open, and makes the rest of the document inert — the
+     blur, the spinner and the input-blocking all come from one element. */
+  #busy { background: transparent; border: 0; padding: 0; outline: none; overflow: visible; }
+  #busy::backdrop { background: rgba(4, 8, 20, .45); backdrop-filter: blur(3px); }
+  .busy-ring {
+    width: 44px; height: 44px; border-radius: 9999px;
+    border: 3px solid #243354; border-top-color: #10b981;
+    animation: busy-spin .7s linear infinite;
+  }
+  @keyframes busy-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .busy-ring { animation-duration: 1.8s; } }
+  .an-type-btn { color:#94a3b8; }
+  .an-type-btn.active { background:#243354; color:#e2e8f0; font-weight:600; }
+  .chip { font-size:.68rem; padding:.15rem .5rem; border-radius:9999px; font-weight:600; letter-spacing:.02em; }
+  /* Settings: masonry columns on wider screens (varying-height cards flow). */
+  #tab-settings { column-gap: 1.5rem; }
+  #tab-settings > div { break-inside: avoid; margin-bottom: 1.5rem; }
+  @media (min-width: 640px)  { #tab-settings { column-count: 2; } }
+  @media (min-width: 1024px) { #tab-settings { column-count: 3; } }
+</style>
+</head>
+<body class="bg-ink-900 text-slate-200 min-h-screen font-sans overflow-x-hidden">
+
+<!-- Left sidebar (desktop) -->
+<aside class="hidden md:flex md:flex-col fixed inset-y-0 left-0 w-56 bg-ink-800 border-r border-ink-600 z-20">
+  <div class="px-5 py-5 border-b border-ink-600">
+    <h1 class="text-lg font-bold tracking-tight">💰 Finance <span class="text-mint-400">Analyzer</span></h1>
+  </div>
+  <nav class="flex-1 p-3 space-y-1 text-sm" data-nav>
+    <button data-tab="dashboard" class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>📊</span> Dashboard</button>
+    <button data-tab="analytics" class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>📈</span> Analytics</button>
+    <button data-tab="loans"     class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>🏦</span> Loans</button>
+    <button data-tab="investments" class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>💹</span> Investments</button>
+    <button data-tab="budget"    class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>🎯</span> Budget</button>
+    <button data-tab="ledger"    class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>📒</span> Ledger</button>
+    <button data-tab="upload"    class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>📤</span> Upload</button>
+    <button data-tab="review"    class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>📝</span> Review</button>
+    <button data-tab="logs"      class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>📜</span> Logs</button>
+    <button data-tab="settings"  class="nav-btn w-full text-left px-3 py-2 rounded-lg flex items-center gap-2.5"><span>⚙️</span> Settings</button>
+  </nav>
+</aside>
+
+<!-- Mobile top bar: shows "Finance Analyzer - <Page>" (the desktop title bar is hidden here) -->
+<header class="md:hidden sticky top-0 z-10 bg-ink-800/95 backdrop-blur border-b border-ink-600 px-4 py-3">
+  <h1 class="text-base font-bold tracking-tight"><span class="text-mint-400">💰</span> <span id="mobile-title">Finance Analyzer</span></h1>
+</header>
+
+<main class="md:ml-56 px-4 sm:px-6 lg:px-8 pt-3 md:pt-6 pb-24 md:pb-8">
+  <!-- Shared page title bar (desktop only) -->
+  <div class="hidden md:flex items-center border-b border-ink-600 pb-4 mb-6">
+    <h1 id="page-title" class="text-2xl font-bold tracking-tight">Dashboard</h1>
+  </div>
+
+  <div class="space-y-6">
+
+  <!-- ============ DASHBOARD TAB ============ -->
+  <section id="tab-dashboard" class="tab space-y-6">
+    <div id="dash-empty" class="hidden bg-ink-800 rounded-2xl p-8 border border-ink-600 text-center text-slate-400">
+      No transactions in the ledger yet. Upload a statement, review it, and hit
+      <span class="text-mint-400">Commit to ledger</span> — your net worth and trends appear here.
+    </div>
+
+    <!-- Ledgers that don't add up to their own statement. A wrong net worth stated
+         confidently is worse than a net worth that admits it cannot be trusted. -->
+    <div id="dash-health" class="hidden bg-rose-500/10 border border-rose-500/40 rounded-2xl p-4 space-y-3">
+      <div class="flex items-start gap-3">
+        <span class="text-xl leading-none">⚠️</span>
+        <div>
+          <h3 class="font-semibold text-rose-200">This net worth does not add up</h3>
+          <p class="text-xs text-rose-200/70 mt-0.5">
+            An account's balance no longer matches the closing balance printed on its own statement.
+            Nothing has been changed automatically.
+          </p>
+        </div>
+      </div>
+      <div id="dash-health-list" class="space-y-2 text-sm"></div>
+    </div>
+
+    <div id="dash-body" class="space-y-6">
+      <!-- Net worth hero -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- The trend gets its own full-width row: squeezed into the corner it read
+             as a scribble. flex-1 lets it take the slack the card would otherwise
+             leave under the number. -->
+        <div class="bg-gradient-to-br from-ink-800 to-ink-700 rounded-2xl p-6 border border-ink-600 lg:col-span-2 overflow-hidden flex flex-col gap-4">
+          <div class="flex items-baseline justify-between gap-4">
+            <div class="min-w-0">
+              <div class="text-sm text-slate-400">Net worth</div>
+              <div id="nw-hero" class="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mt-1">₹0</div>
+            </div>
+            <div id="nw-trend-range" class="text-[11px] text-slate-500 shrink-0"></div>
+          </div>
+          <div id="nw-trend" class="flex-1 min-h-[5.5rem] flex items-stretch"></div>
+          <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+            <div><span class="text-slate-500">Assets</span> <span id="nw-assets" class="font-semibold text-mint-400"></span></div>
+            <div><span class="text-slate-500">Liabilities</span> <span id="nw-liab" class="font-semibold text-rose-300"></span></div>
+          </div>
+        </div>
+
+        <!-- Stat tiles -->
+        <div class="grid grid-cols-2 lg:grid-cols-1 gap-3">
+          <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+            <div class="text-xs text-slate-400">Daily avg expense</div>
+            <div id="stat-daily" class="text-2xl font-semibold mt-1">₹0</div>
+            <div class="text-xs text-slate-500 mt-0.5">last 30 days</div>
+          </div>
+          <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+            <div id="stat-mom-title" class="text-xs text-slate-400">Spend vs last month</div>
+            <div id="stat-mom" class="text-2xl font-semibold mt-1">—</div>
+            <div id="stat-mom-sub" class="text-xs text-slate-500 mt-0.5"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <div class="text-xs text-slate-400">Monthly avg expense</div>
+          <div id="stat-monthly" class="text-2xl font-semibold mt-1">₹0</div>
+          <div id="stat-monthly-sub" class="text-xs text-slate-500 mt-0.5">completed months only</div>
+
+          <!-- EMI is contractual; the rest is the part you can actually steer. -->
+          <div class="mt-4 pt-4 border-t border-ink-600 space-y-2.5">
+            <div class="flex items-baseline justify-between gap-3">
+              <span class="text-xs text-slate-400">Without EMI</span>
+              <span id="stat-monthly-ex-emi" class="font-semibold tabular-nums">₹0</span>
+            </div>
+            <div class="flex items-baseline justify-between gap-3">
+              <span class="text-xs text-slate-400">EMI</span>
+              <span id="stat-monthly-emi" class="font-semibold tabular-nums text-rose-300">₹0</span>
+            </div>
+            <div id="stat-monthly-split" class="h-1.5 rounded-full overflow-hidden flex bg-ink-700"></div>
+            <div id="stat-monthly-share" class="text-[11px] text-slate-500"></div>
+          </div>
+
+          <div id="stat-monthly-hint" class="text-xs text-slate-500 mt-4 pt-4 border-t border-ink-600"></div>
+        </div>
+
+        <!-- Monthly budget + derived daily allowance -->
+        <div id="budget-card" class="hidden bg-ink-800 rounded-2xl p-5 border border-ink-600 lg:col-span-2">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="font-semibold">Monthly budget <span id="budget-month" class="text-slate-500 text-xs font-normal"></span></h2>
+            <span id="budget-pace" class="chip"></span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="budget-spent" class="text-2xl font-bold">₹0</span>
+            <span class="text-slate-500 text-sm">spent of <span id="budget-monthly" class="text-slate-300"></span></span>
+          </div>
+          <div class="h-2.5 rounded-full bg-ink-700 overflow-hidden mt-3">
+            <div id="budget-bar" class="h-full rounded-full transition-all" style="width:0%"></div>
+          </div>
+          <div class="grid grid-cols-3 gap-3 mt-4 text-center">
+            <div class="bg-ink-700/50 rounded-lg py-2">
+              <div class="text-[11px] text-slate-400">Daily budget</div>
+              <div id="budget-daily" class="font-semibold text-sm mt-0.5"></div>
+            </div>
+            <div class="bg-ink-700/50 rounded-lg py-2">
+              <div class="text-[11px] text-slate-400">Left this month</div>
+              <div id="budget-remaining" class="font-semibold text-sm mt-0.5"></div>
+            </div>
+            <div class="bg-ink-700/50 rounded-lg py-2">
+              <div class="text-[11px] text-slate-400">Spendable / day</div>
+              <div id="budget-daily-remaining" class="font-semibold text-sm mt-0.5"></div>
+              <div id="budget-days-left" class="text-[10px] text-slate-500"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Milestone ladder (horizontal, step-based) -->
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <div class="flex items-center justify-between mb-5">
+          <h2 class="font-semibold">Milestone Ladder</h2>
+          <span id="ladder-step-pill" class="chip bg-ink-700 border border-ink-600 text-slate-300">Step: ₹10,000</span>
+        </div>
+
+        <div class="mb-1 text-sm flex flex-wrap items-baseline gap-x-2">
+          <span class="font-medium text-cyan-300">📈 Net Worth Climb</span>
+          <span id="nw-ladder-caption" class="text-slate-500 text-xs"></span>
+        </div>
+        <div id="nw-ladder" class="overflow-x-auto pb-1"></div>
+
+        <div id="debt-ladder-wrap" class="hidden mt-6">
+          <div class="mb-1 text-sm flex flex-wrap items-baseline gap-x-2">
+            <span class="font-medium text-amber-300">📉 Debt Paydown</span>
+            <span id="debt-ladder-caption" class="text-slate-500 text-xs"></span>
+          </div>
+          <div id="debt-ladder" class="overflow-x-auto pb-1"></div>
+        </div>
+      </div>
+
+      <!-- Charts: Monthly income/expense + Net worth vs Debt, side by side (50/50) on large screens -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <div class="flex items-center justify-between gap-3 mb-4">
+            <h2 class="font-semibold">Monthly income &amp; expense
+              <span id="month-chart-range" class="text-slate-500 text-xs font-normal"></span></h2>
+            <div class="flex gap-3 text-xs">
+              <span class="flex items-center gap-1.5"><span class="inline-block w-3 h-2 rounded-sm" style="background:#059669"></span>Income</span>
+              <span class="flex items-center gap-1.5"><span class="inline-block w-3 h-2 rounded-sm" style="background:#e11d48"></span>Expense</span>
+            </div>
+          </div>
+          <!-- Every month, scrollable, opened at the most recent. Columns hold a
+               minimum pitch so the bars stay readable however long the ledger is;
+               labels are angled so they never collide. -->
+          <div id="month-scroll" class="overflow-x-auto overflow-y-hidden -mx-1 px-1 pb-1">
+            <div id="month-inner">
+              <div id="month-chart" class="flex items-end gap-[3px] h-44"></div>
+              <div id="month-chart-axis" class="flex gap-[3px] mt-1 h-12"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="nwd-chart-card" class="hidden bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="font-semibold">Net worth vs Debt</h2>
+            <div class="flex gap-3 text-xs">
+              <span class="flex items-center gap-1.5"><span class="inline-block w-4 h-0.5 rounded" style="background:#059669"></span>Net worth</span>
+              <span class="flex items-center gap-1.5"><span class="inline-block w-4 h-0.5 rounded" style="background:#e11d48"></span>Debt</span>
+            </div>
+          </div>
+          <!-- The ₹ axis is pinned; only the plot scrolls, so the scale stays
+               readable however far back you scroll. -->
+          <div class="flex">
+            <div id="nwd-axis" class="shrink-0"></div>
+            <div id="nwd-scroll" class="overflow-x-auto overflow-y-hidden flex-1 min-w-0">
+              <div id="nwd-chart" class="relative"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Accounts and loans are different things: one you can spend, the other
+           you owe. Same card, they only ever read as a single confusing list. -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <div class="flex items-baseline justify-between gap-3 mb-3">
+            <h2 class="font-semibold">Accounts</h2>
+            <span id="dash-assets-total" class="text-sm font-semibold text-mint-400 tabular-nums"></span>
+          </div>
+          <ul id="dash-accounts" class="space-y-1.5 text-sm"></ul>
+        </div>
+
+        <div id="dash-loans-card" class="hidden bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <div class="flex items-baseline justify-between gap-3 mb-3">
+            <h2 class="font-semibold">Loans</h2>
+            <span id="dash-liab-total" class="text-sm font-semibold text-rose-300 tabular-nums"></span>
+          </div>
+          <ul id="dash-loans" class="space-y-1.5 text-sm"></ul>
+          <p id="dash-loans-note" class="text-[11px] text-slate-500 mt-3"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ANALYTICS TAB ============ -->
+  <section id="tab-analytics" class="tab hidden space-y-6">
+
+    <!-- period controls -->
+    <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+      <div class="flex flex-wrap items-center gap-3">
+        <div class="inline-flex rounded-xl bg-ink-700 p-1 border border-ink-600" id="an-type">
+          <button data-type="month" class="an-type-btn px-3 py-1.5 rounded-lg text-sm">Month</button>
+          <button data-type="year"  class="an-type-btn px-3 py-1.5 rounded-lg text-sm">Year</button>
+          <button data-type="fy"    class="an-type-btn px-3 py-1.5 rounded-lg text-sm">Financial Year</button>
+        </div>
+        <!-- Year + Month, for the monthly view: 91 months in one list is unusable. -->
+        <div id="an-month-pair" class="hidden items-center gap-2">
+          <select id="an-year" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm"></select>
+          <select id="an-month" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm"></select>
+        </div>
+        <!-- One list is fine for Year and Financial Year. -->
+        <select id="an-period" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm min-w-[10rem]"></select>
+        <select id="an-account" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm">
+          <option value="">All accounts</option>
+        </select>
+        <div class="flex-1"></div>
+        <div id="an-range" class="text-xs text-slate-500"></div>
+      </div>
+      <div id="an-partial" class="hidden mt-3 text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5"></div>
+    </div>
+
+    <div id="an-empty" class="hidden bg-ink-800 rounded-2xl p-10 border border-ink-600 text-center text-slate-500"></div>
+
+    <div id="an-body" class="space-y-6">
+
+      <!-- headline numbers -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Income</div>
+          <div id="an-income" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div id="an-income-d" class="text-xs mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Expense</div>
+          <div id="an-expense" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div id="an-expense-d" class="text-xs mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">EMI</div>
+          <div id="an-emi" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div id="an-emi-d" class="text-xs mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Kept</div>
+          <div id="an-net" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div id="an-net-d" class="text-xs mt-1"></div>
+        </div>
+      </div>
+
+      <!-- insights -->
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <h2 class="font-semibold mb-3">Insights</h2>
+        <ul id="an-insights" class="grid grid-cols-1 lg:grid-cols-2 gap-3"></ul>
+      </div>
+
+      <!-- donuts -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-1">Where it went</h2>
+          <p class="text-xs text-slate-500 mb-3">Excludes transfers between your own accounts, investments and card bills.</p>
+          <div class="flex flex-col sm:flex-row items-center gap-5">
+            <div id="an-expense-donut" class="shrink-0"></div>
+            <ul id="an-expense-legend" class="flex-1 w-full space-y-1.5 text-sm min-w-0"></ul>
+          </div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-1">Where it came from</h2>
+          <p class="text-xs text-slate-500 mb-3">Excludes self-transfers and loan disbursements.</p>
+          <div class="flex flex-col sm:flex-row items-center gap-5">
+            <div id="an-income-donut" class="shrink-0"></div>
+            <ul id="an-income-legend" class="flex-1 w-full space-y-1.5 text-sm min-w-0"></ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- month-by-month, full width (year / FY only) -->
+      <div id="an-months-card" class="hidden bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <div class="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+          <h2 class="font-semibold">Month by month</h2>
+          <div class="flex items-center gap-4 text-xs text-slate-400">
+            <span class="flex items-center gap-1.5"><i class="w-3 h-2 rounded-sm inline-block" style="background:#059669"></i>Income</span>
+            <span class="flex items-center gap-1.5"><i class="w-3 h-2 rounded-sm inline-block" style="background:#e11d48"></i>Expense</span>
+            <span class="flex items-center gap-1.5"><i class="w-3 h-2 rounded-sm inline-block" style="background:#f59e0b"></i>EMI</span>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500 mb-4">Bars share one scale, so a long bar is genuinely a big month.</p>
+        <div id="an-months" class="space-y-3"></div>
+      </div>
+
+      <!-- salary progression, full history (year / FY only) -->
+      <div id="an-salary-card" class="hidden bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <div class="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+          <h2 class="font-semibold">Salary progression
+            <span id="an-salary-span" class="text-slate-500 text-xs font-normal"></span></h2>
+          <div class="flex items-center gap-4 text-xs text-slate-400">
+            <span class="flex items-center gap-1.5"><i class="w-4 h-0.5 rounded inline-block" style="background:#34d399"></i>Monthly salary</span>
+            <span class="flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:#f59e0b"></i>Raise</span>
+            <span class="flex items-center gap-1.5"><i class="w-3 h-2.5 rounded-sm inline-block bg-slate-500/25"></i>Selected period</span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 my-4">
+          <div class="bg-ink-700/40 border border-ink-600 rounded-xl p-3">
+            <div class="text-xs text-slate-400">Salary now</div>
+            <div id="an-sal-current" class="text-xl font-semibold mt-1 truncate text-mint-400"></div>
+            <div class="text-[11px] text-slate-500 mt-0.5">median of the last 3 payslips</div>
+          </div>
+          <div class="bg-ink-700/40 border border-ink-600 rounded-xl p-3">
+            <div class="text-xs text-slate-400">Growth so far</div>
+            <div id="an-sal-growth" class="text-xl font-semibold mt-1 truncate"></div>
+            <div id="an-sal-growth-sub" class="text-[11px] text-slate-500 mt-0.5"></div>
+          </div>
+          <div class="bg-ink-700/40 border border-ink-600 rounded-xl p-3">
+            <div class="text-xs text-slate-400">Compound annual rate</div>
+            <div id="an-sal-cagr" class="text-xl font-semibold mt-1 truncate"></div>
+            <div id="an-sal-cagr-sub" class="text-[11px] text-slate-500 mt-0.5"></div>
+          </div>
+          <div class="bg-ink-700/40 border border-ink-600 rounded-xl p-3">
+            <div class="text-xs text-slate-400">This period</div>
+            <div id="an-sal-period" class="text-xl font-semibold mt-1 truncate"></div>
+            <div id="an-sal-period-sub" class="text-[11px] text-slate-500 mt-0.5"></div>
+          </div>
+        </div>
+
+        <div class="flex">
+          <div id="an-sal-axis" class="shrink-0"></div>
+          <div id="an-sal-scroll" class="overflow-x-auto overflow-y-hidden flex-1 min-w-0">
+            <div id="an-sal-chart" class="relative"></div>
+          </div>
+        </div>
+
+        <p id="an-sal-note" class="text-xs text-slate-500 mt-3"></p>
+        <div id="an-sal-hikes" class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-sm"></div>
+      </div>
+
+      <!-- committed vs discretionary + averages -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-1">Committed vs discretionary</h2>
+          <p class="text-xs text-slate-500 mb-4">Only the discretionary half can be changed this month.</p>
+          <div id="an-commit-bar" class="h-4 rounded-full overflow-hidden flex bg-ink-700 mb-3"></div>
+          <div id="an-commit-legend" class="grid grid-cols-2 gap-3 text-sm"></div>
+          <div id="an-commit-detail" class="mt-4 pt-4 border-t border-ink-600 space-y-1.5 text-sm"></div>
+        </div>
+
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-4">Averages &amp; rhythm</h2>
+          <div class="grid grid-cols-2 gap-3 mb-5">
+            <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+              <div class="text-xs text-slate-400">Expense / day</div><div id="an-avg-de" class="text-lg font-semibold"></div></div>
+            <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+              <div class="text-xs text-slate-400">Expense / week</div><div id="an-avg-we" class="text-lg font-semibold"></div></div>
+            <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+              <div class="text-xs text-slate-400">Income / day</div><div id="an-avg-di" class="text-lg font-semibold"></div></div>
+            <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+              <div class="text-xs text-slate-400">Per transaction</div><div id="an-avg-pt" class="text-lg font-semibold"></div></div>
+          </div>
+          <div class="text-xs text-slate-500 mb-2">Average spend by day of week</div>
+          <div id="an-weekday" class="flex items-end gap-1.5 h-24"></div>
+          <div id="an-days-note" class="text-xs text-slate-500 mt-3"></div>
+        </div>
+      </div>
+
+      <!-- day-of-month curve -->
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <h2 class="font-semibold mb-1">Spending through the month</h2>
+        <p class="text-xs text-slate-500 mb-4">Totals by day of month across this period — shows whether you front-load or run late.</p>
+        <div id="an-dom" class="flex items-end gap-[2px] h-28"></div>
+        <div class="flex justify-between text-[10px] text-slate-600 mt-1"><span>1st</span><span>10th</span><span>20th</span><span>31st</span></div>
+      </div>
+
+      <!-- movers + recurring -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-1">Biggest changes</h2>
+          <p id="an-movers-sub" class="text-xs text-slate-500 mb-4"></p>
+          <ul id="an-movers" class="space-y-2.5 text-sm"></ul>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <div class="flex items-baseline justify-between gap-2 mb-1">
+            <h2 class="font-semibold">Recurring payments</h2>
+            <span id="an-recurring-total" class="text-sm text-slate-400"></span>
+          </div>
+          <p class="text-xs text-slate-500 mb-4">Detected from the last 12 months: 3+ payments, steady gap, steady amount.</p>
+          <ul id="an-recurring" class="space-y-2 text-sm"></ul>
+        </div>
+      </div>
+
+      <!-- merchants + outliers -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-4">Top merchants</h2>
+          <ul id="an-merchants" class="space-y-2.5 text-sm"></ul>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-1">Unusually large</h2>
+          <p class="text-xs text-slate-500 mb-4">At least 4× the median for their own category.</p>
+          <ul id="an-anomalies" class="space-y-2.5 text-sm"></ul>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ LOANS TAB ============ -->
+  <!-- Independent of the ledger: the schedule is derived from (loan + events) on
+       every load, never stored. The one seam is loan_payments, which links a real
+       ledger transaction to an instalment number. -->
+  <section id="tab-loans" class="tab hidden space-y-6">
+
+    <!-- loan picker -->
+    <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+      <div class="flex flex-wrap items-center gap-3">
+        <select id="loan-picker" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm min-w-[14rem]"></select>
+        <button id="loan-add" class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-lg px-4 py-2 text-sm">+ Add loan</button>
+        <div class="flex-1"></div>
+        <button id="loan-edit" class="hidden bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-3 py-2 text-sm">Edit terms</button>
+        <button id="loan-delete" class="hidden bg-ink-700 border border-rose-500/40 hover:bg-rose-500/20 text-rose-300 rounded-lg px-3 py-2 text-sm">Delete</button>
+      </div>
+      <div id="loan-warnings" class="hidden mt-3 text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 space-y-1"></div>
+    </div>
+
+    <div id="loan-empty" class="hidden bg-ink-800 rounded-2xl p-10 border border-ink-600 text-center text-slate-500">
+      No loans yet. Add one to see its full amortisation schedule, prepayment impact and tax view.
+    </div>
+
+    <!-- A loan whose terms no longer produce a schedule. The schedule is derived,
+         so nothing is corrupted — but the user must be able to reach the events
+         that broke it, which normally live inside the (hidden) detail view. -->
+    <div id="loan-broken" class="hidden bg-ink-800 rounded-2xl p-4 border border-rose-500/40 space-y-4">
+      <div>
+        <h3 class="font-semibold text-rose-200">This loan cannot be calculated</h3>
+        <p id="loan-broken-msg" class="text-sm text-slate-300 mt-1"></p>
+        <p class="text-xs text-slate-500 mt-2">
+          Your data is intact — the schedule is worked out from the terms and the changes below,
+          never stored. Fix either and it comes straight back.
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button id="loan-broken-edit" class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-lg px-4 py-2 text-sm">Edit terms</button>
+        <button id="loan-broken-add" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-4 py-2 text-sm">+ Add a change</button>
+      </div>
+      <div>
+        <h4 class="text-sm font-semibold mb-2">Rate changes, EMI changes, tranches &amp; prepayments</h4>
+        <div id="loan-broken-events" class="space-y-2 text-sm"></div>
+      </div>
+    </div>
+
+    <!-- ---------- ALL LOANS ---------- -->
+    <div id="loan-portfolio" class="hidden space-y-6">
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Total debt</div>
+          <div id="lp-outstanding" class="text-2xl font-semibold mt-1 truncate text-rose-300"></div>
+          <div id="lp-principal" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Monthly EMI outgo</div>
+          <div id="lp-emi" class="text-2xl font-semibold mt-1 truncate text-amber-300"></div>
+          <div id="lp-ratio" class="text-xs mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Blended rate</div>
+          <div id="lp-rate" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div class="text-xs text-slate-500 mt-1">weighted by balance</div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Debt-free on</div>
+          <div id="lp-free" class="text-2xl font-semibold mt-1 truncate text-mint-400"></div>
+          <div id="lp-interest" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+      </div>
+
+      <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600 overflow-x-auto">
+        <h3 class="font-semibold mb-3">Every loan</h3>
+        <table class="w-full text-sm min-w-[46rem]">
+          <thead class="text-slate-400 text-xs border-b border-ink-600">
+            <tr><th class="text-left py-2">Loan</th><th class="text-left">Type</th><th class="text-right">Rate</th>
+                <th class="text-right">EMI</th><th class="text-right">Outstanding</th>
+                <th class="text-left pl-4 w-48">Repaid</th><th class="text-right">Closes</th></tr>
+          </thead>
+          <tbody id="lp-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ---------- ONE LOAN ---------- -->
+    <div id="loan-detail" class="hidden space-y-6">
+
+      <!-- headline -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Outstanding principal</div>
+          <div id="ln-outstanding" class="text-2xl font-semibold mt-1 truncate text-rose-300"></div>
+          <div id="ln-progress" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400" id="ln-next-label">Next instalment</div>
+          <div id="ln-next" class="text-2xl font-semibold mt-1 truncate text-amber-300"></div>
+          <div id="ln-next-date" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Instalments paid</div>
+          <div id="ln-paid" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div id="ln-overdue" class="text-xs mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Projected payoff</div>
+          <div id="ln-payoff" class="text-2xl font-semibold mt-1 truncate text-mint-400"></div>
+          <div id="ln-payoff-sub" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+      </div>
+
+      <!-- what your prepayments bought you -->
+      <div id="ln-savings" class="hidden bg-gradient-to-br from-mint-500/10 to-transparent rounded-2xl p-4 border border-mint-500/30">
+        <div class="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+          <div>
+            <div class="text-xs text-slate-400">Interest you will never pay</div>
+            <div id="ln-saved" class="text-2xl font-semibold text-mint-400"></div>
+          </div>
+          <div>
+            <div class="text-xs text-slate-400">Months cut off the loan</div>
+            <div id="ln-months-saved" class="text-2xl font-semibold text-mint-400"></div>
+          </div>
+          <div class="text-xs text-slate-500 max-w-md" id="ln-savings-note"></div>
+        </div>
+      </div>
+
+      <!-- cost of the loan -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Borrowed</div>
+          <div id="ln-principal" class="text-lg font-semibold mt-1 truncate"></div>
+          <div id="ln-drawn" class="text-xs mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Total interest</div>
+          <div id="ln-interest" class="text-lg font-semibold mt-1 truncate text-rose-300"></div>
+          <div id="ln-interest-pct" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Interest paid so far</div>
+          <div id="ln-interest-paid" class="text-lg font-semibold mt-1 truncate"></div>
+          <div id="ln-principal-paid" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Remaining payments</div>
+          <div id="ln-remaining" class="text-lg font-semibold mt-1 truncate"></div>
+          <div class="text-xs text-slate-500 mt-1">principal + future interest</div>
+        </div>
+      </div>
+
+      <!-- balance curve -->
+      <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+        <div class="flex items-baseline justify-between mb-3">
+          <h3 class="font-semibold">Balance over the life of the loan</h3>
+          <div id="ln-crossover" class="text-xs text-slate-500"></div>
+        </div>
+        <svg id="ln-curve" viewBox="0 0 800 220" class="w-full h-48" preserveAspectRatio="none"></svg>
+        <div class="flex flex-wrap gap-4 text-xs text-slate-500 mt-2">
+          <span><span class="inline-block w-3 h-1.5 rounded-sm align-middle" style="background:#e11d48"></span> outstanding</span>
+          <span><span class="inline-block w-3 h-1.5 rounded-sm align-middle" style="background:#f59e0b"></span> prepayment</span>
+          <span><span class="inline-block w-3 h-1.5 rounded-sm align-middle" style="background:#334155"></span> today</span>
+        </div>
+      </div>
+
+      <!-- interest vs principal per year -->
+      <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+        <h3 class="font-semibold mb-1">Where each year's money goes</h3>
+        <p class="text-xs text-slate-500 mb-3">Early years are almost all interest. The bar flips once the crossover month passes.</p>
+        <div id="ln-years" class="space-y-1.5"></div>
+        <div class="flex flex-wrap gap-4 text-xs text-slate-500 mt-3">
+          <span><span class="inline-block w-3 h-2 rounded-sm align-middle" style="background:#e11d48"></span> interest</span>
+          <span><span class="inline-block w-3 h-2 rounded-sm align-middle" style="background:#10b981"></span> principal</span>
+          <span><span class="inline-block w-3 h-2 rounded-sm align-middle" style="background:#f59e0b"></span> prepayment</span>
+        </div>
+      </div>
+
+      <!-- prepayment simulator -->
+      <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+        <h3 class="font-semibold mb-1">What if I prepay?</h3>
+        <p class="text-xs text-slate-500 mb-3">
+          Add as many prepayments as you like — they are simulated together, against the loan you
+          actually have. Nothing is saved.
+        </p>
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="inline-flex rounded-xl bg-ink-700 p-1 border border-ink-600" id="sim-mode">
+            <button data-mode="lumpsum" class="sim-mode-btn px-3 py-1.5 rounded-lg text-sm">Lump sum</button>
+            <button data-mode="monthly" class="sim-mode-btn px-3 py-1.5 rounded-lg text-sm">Extra every month</button>
+          </div>
+          <label class="text-xs text-slate-400">Amount ₹
+            <input id="sim-amount" type="number" min="1" step="100" value="100000"
+                   class="block mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm w-36">
+          </label>
+          <label class="text-xs text-slate-400" id="sim-date-wrap">Starting
+            <input id="sim-date" type="date" class="block mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm">
+          </label>
+          <label class="text-xs text-slate-400 hidden" id="sim-months-wrap">For how many months
+            <input id="sim-months" type="number" min="1" max="600" value="24"
+                   class="block mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm w-28">
+          </label>
+          <label class="text-xs text-slate-400">Then
+            <select id="sim-prepay-mode" class="block mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm">
+              <option value="reduce_tenure">Finish the loan earlier</option>
+              <option value="reduce_emi">Lower the EMI</option>
+            </select>
+          </label>
+          <button id="sim-add" class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-lg px-4 py-2 text-sm">+ Add</button>
+        </div>
+
+        <!-- the plan: every prepayment being simulated, each removable -->
+        <div id="sim-plan-wrap" class="hidden mt-4">
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <h4 class="text-xs font-semibold text-slate-400">Prepayments in this plan</h4>
+            <button id="sim-clear" class="text-xs text-slate-400 hover:text-rose-300">Clear all</button>
+          </div>
+          <div id="sim-plan" class="space-y-2 text-sm"></div>
+        </div>
+
+        <p id="sim-empty" class="mt-4 text-xs text-slate-500">Add a prepayment above to see what it would save you.</p>
+        <div id="sim-result" class="hidden mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+        <div id="sim-note" class="hidden mt-3 text-xs text-slate-400"></div>
+      </div>
+
+      <!-- rate / EMI / prepayment events -->
+      <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 class="font-semibold">Rate changes, EMI changes & prepayments</h3>
+            <p class="text-xs text-slate-500">Everything that changed the loan's arithmetic partway through.</p>
+          </div>
+          <button id="ln-add-event" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-3 py-2 text-sm">+ Add</button>
+        </div>
+        <div id="ln-events" class="space-y-2 text-sm"></div>
+      </div>
+
+      <!-- tax view -->
+      <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600 overflow-x-auto">
+        <h3 class="font-semibold mb-1">Interest & principal by financial year</h3>
+        <p class="text-xs text-slate-500 mb-3">
+          Home-loan interest is deductible under Section 24(b), capped at ₹2,00,000 a financial year.
+          Principal counts toward 80C — a limit you share with EPF, ELSS and insurance, so check the total yourself.
+        </p>
+        <div id="ln-tax-note" class="hidden mb-3 text-xs text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-lg p-2.5"></div>
+        <table class="w-full text-sm min-w-[42rem]">
+          <thead class="text-slate-400 text-xs border-b border-ink-600">
+            <tr><th class="text-left py-2">Financial year</th><th class="text-right">Interest</th>
+                <th class="text-right" id="ln-fy-carry-head">Pre-construction 1/5</th>
+                <th class="text-right">Deductible (24b)</th><th class="text-right">Over cap</th>
+                <th class="text-right">Principal (80C)</th></tr>
+          </thead>
+          <tbody id="ln-fy"></tbody>
+        </table>
+      </div>
+
+      <!-- schedule -->
+      <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 class="font-semibold">Payment schedule</h3>
+            <p class="text-xs text-slate-500">
+              Every instalment starts unpaid. Tag an EMI in the Ledger to mark it paid.
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="ln-sched-filter" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm">
+              <option value="all">All instalments</option>
+              <option value="unpaid">Unpaid only</option>
+              <option value="paid">Paid only</option>
+              <option value="overdue">Overdue only</option>
+            </select>
+            <select id="ln-sched-year" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm"></select>
+          </div>
+        </div>
+        <div id="ln-variance" class="hidden mb-3 text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5"></div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm min-w-[48rem]">
+            <thead class="text-slate-400 text-xs border-b border-ink-600">
+              <tr><th class="text-left py-2 w-10">#</th><th class="text-left">Due</th>
+                  <th class="text-right">Opening</th><th class="text-right">Drawn</th>
+                  <th class="text-right">Payment</th>
+                  <th class="text-right">Interest</th><th class="text-right">Principal</th>
+                  <th class="text-right">Prepaid</th><th class="text-right">Closing</th>
+                  <th class="text-right">Rate</th><th class="text-center pl-3">Status</th></tr>
+            </thead>
+            <tbody id="ln-schedule"></tbody>
+          </table>
+        </div>
+        <div id="ln-sched-more" class="hidden text-center pt-3">
+          <button id="ln-sched-more-btn" class="text-xs text-mint-400 hover:underline"></button>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ INVESTMENTS TAB ============ -->
+  <section id="tab-investments" class="tab hidden space-y-6">
+    <div class="flex flex-wrap items-center gap-3">
+      <select id="inv-picker" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm min-w-[12rem]"></select>
+      <button id="inv-add" class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-lg px-4 py-2 text-sm">+ Add holding</button>
+    </div>
+
+    <div id="inv-empty" class="hidden bg-ink-800 rounded-2xl p-10 border border-ink-600 text-center text-slate-500">
+      No holdings yet. Add one to track its value, returns (XIRR) and projected growth.
+    </div>
+
+    <!-- portfolio overview (shown when nothing is selected) -->
+    <div id="inv-portfolio" class="hidden space-y-6">
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Current value</div>
+          <div id="ip-value" class="text-2xl font-semibold mt-1 truncate text-mint-400"></div>
+          <div id="ip-value-sub" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Invested</div>
+          <div id="ip-invested" class="text-2xl font-semibold mt-1 truncate"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Unrealised gain</div>
+          <div id="ip-gain" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div id="ip-gain-sub" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Portfolio XIRR</div>
+          <div id="ip-xirr" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div class="text-xs text-slate-500 mt-1">money-weighted, all holdings</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600 lg:col-span-2">
+          <h2 class="font-semibold mb-3">Holdings</h2>
+          <div id="ip-holdings" class="space-y-1.5 text-sm"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+          <h2 class="font-semibold mb-3">By type</h2>
+          <div id="ip-bytype" class="space-y-2 text-sm"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- single-holding detail -->
+    <div id="inv-detail" class="hidden space-y-6">
+      <div class="flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <h2 id="inv-name" class="text-xl font-semibold flex items-center gap-2"></h2>
+          <div id="inv-sub" class="text-sm text-slate-500 mt-0.5"></div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="inv-edit" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-3 py-2 text-sm">Edit</button>
+          <button id="inv-delete" class="bg-ink-700 border border-ink-600 hover:border-rose-500/60 text-rose-300 rounded-lg px-3 py-2 text-sm">Delete</button>
+        </div>
+      </div>
+
+      <div id="inv-stale" class="hidden text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5"></div>
+
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Current value</div>
+          <div id="id-value" class="text-2xl font-semibold mt-1 truncate text-mint-400"></div>
+          <div id="id-value-sub" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Invested (net)</div>
+          <div id="id-invested" class="text-2xl font-semibold mt-1 truncate"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">Gain</div>
+          <div id="id-gain" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div id="id-gain-sub" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600">
+          <div class="text-xs text-slate-400">XIRR</div>
+          <div id="id-xirr" class="text-2xl font-semibold mt-1 truncate"></div>
+          <div class="text-xs text-slate-500 mt-1">annualised, money-weighted</div>
+        </div>
+      </div>
+
+      <!-- projection -->
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <h3 class="font-semibold mb-1">Projection</h3>
+        <p class="text-xs text-slate-500 mb-3">Nothing is saved. Compounds the current value forward, plus an optional monthly SIP.</p>
+        <div class="flex flex-wrap items-end gap-3">
+          <label class="text-xs text-slate-400">For how long
+            <select id="inv-proj-years" class="block mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm">
+              <option value="12">1 year</option><option value="36">3 years</option>
+              <option value="60">5 years</option><option value="120" selected>10 years</option>
+              <option value="180">15 years</option><option value="240">20 years</option>
+              <option value="360">30 years</option>
+            </select>
+          </label>
+          <label class="text-xs text-slate-400">Monthly SIP ₹
+            <input id="inv-proj-sip" type="number" min="0" step="500" value="0"
+                   class="block mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm w-32">
+          </label>
+          <div class="text-xs text-slate-500" id="inv-proj-rate"></div>
+        </div>
+        <div id="inv-proj-result" class="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+      </div>
+
+      <!-- valuations -->
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 class="font-semibold">Valuations</h3>
+            <p class="text-xs text-slate-500">What it was worth on a date. The latest is its current value.</p>
+          </div>
+          <button id="inv-add-valuation" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-3 py-2 text-sm">+ Record value</button>
+        </div>
+        <div id="inv-valuations" class="space-y-2 text-sm"></div>
+      </div>
+
+      <!-- events -->
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 class="font-semibold">Buys, sells & dividends</h3>
+            <p class="text-xs text-slate-500">Every cashflow. XIRR is computed from these plus the current value.</p>
+          </div>
+          <button id="inv-add-event" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-3 py-2 text-sm">+ Add</button>
+        </div>
+        <div id="inv-events" class="space-y-2 text-sm"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BUDGET TAB ============ -->
+  <section id="tab-budget" class="tab hidden space-y-6">
+    <div id="budget-page-empty" class="hidden bg-ink-800 rounded-2xl p-8 border border-ink-600 text-center text-slate-400">
+      No budget set yet. Add a monthly budget in <button data-tab="settings" class="text-mint-400 underline nav-btn">Settings</button> to unlock spending analysis.
+    </div>
+
+    <div id="budget-page-body" class="space-y-6">
+      <!-- Overall hero -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-gradient-to-br from-ink-800 to-ink-700 rounded-2xl p-6 border border-ink-600 lg:col-span-2">
+          <div class="flex items-center justify-between mb-1">
+            <div class="text-sm text-slate-400">Spent this month <span id="bp-month" class="text-slate-500"></span></div>
+            <span id="bp-pace" class="chip"></span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="bp-spent" class="text-4xl font-bold tracking-tight">₹0</span>
+            <span class="text-slate-500 text-sm">of <span id="bp-monthly" class="text-slate-300"></span></span>
+          </div>
+          <div class="h-2.5 rounded-full bg-ink-700 overflow-hidden mt-4">
+            <div id="bp-bar" class="h-full rounded-full transition-all" style="width:0%"></div>
+          </div>
+          <div class="grid grid-cols-3 gap-3 mt-4 text-center">
+            <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Daily budget</div><div id="bp-daily" class="font-semibold text-sm mt-0.5"></div></div>
+            <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Left this month</div><div id="bp-remaining" class="font-semibold text-sm mt-0.5"></div></div>
+            <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Spendable / day</div><div id="bp-daily-remaining" class="font-semibold text-sm mt-0.5"></div><div id="bp-days-left" class="text-[10px] text-slate-500"></div></div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 lg:grid-cols-1 gap-3">
+          <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600"><div class="text-xs text-slate-400">Total budgeted</div><div id="bp-total-budgeted" class="text-2xl font-semibold mt-1">₹0</div><div class="text-[11px] text-slate-500 mt-0.5">across tracked categories</div></div>
+          <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600"><div class="text-xs text-slate-400">Categories spending</div><div id="bp-cat-count" class="text-2xl font-semibold mt-1">0</div><div class="text-[11px] text-slate-500 mt-0.5">this month</div></div>
+        </div>
+      </div>
+
+      <!-- Per-category expense analysis -->
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <div class="flex items-center justify-between mb-4 gap-3">
+          <h2 class="font-semibold">Spending by category vs budget</h2>
+          <span class="text-xs text-slate-500">this month</span>
+        </div>
+        <div id="bp-categories" class="space-y-4"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ UPLOAD TAB (CSV import wizard) ============ -->
+  <section id="tab-upload" class="tab space-y-6">
+
+    <!-- STEP 1 — pick a file -->
+    <div id="imp-choose" class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-1">Import a statement</h2>
+      <p class="text-sm text-slate-400 mb-4">
+        CSV from any bank. You tell us once which column is which; the layout is remembered by its
+        header, so the next statement from that bank imports straight away — even if they add or
+        reorder columns.
+      </p>
+
+      <label class="block text-sm mb-1 text-slate-400">Account <span class="text-rose-300">*</span></label>
+      <select id="upload-account" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 mb-1">
+        <option value="">— choose the account this statement belongs to —</option>
+      </select>
+      <p class="text-xs text-slate-500 mb-4">Every statement lands in exactly one account. Getting this wrong mixes two banks' balances together.</p>
+
+      <label id="dropzone" class="block border-2 border-dashed border-ink-600 hover:border-mint-500 rounded-2xl p-8 text-center cursor-pointer transition-colors">
+        <input type="file" id="file-input" accept=".csv,.txt,.tsv" class="hidden">
+        <div class="text-3xl mb-2">📄</div>
+        <div class="text-sm">Tap to choose a CSV <span class="hidden sm:inline">or drag &amp; drop</span></div>
+        <div id="file-names" class="text-xs text-mint-400 mt-2"></div>
+      </label>
+
+      <button id="upload-btn" class="mt-4 w-full bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold py-2.5 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+        Analyse CSV
+      </button>
+      <div id="upload-progress" class="hidden mt-3 text-sm text-slate-400 animate-pulse">Reading the file…</div>
+      <div id="upload-error" class="hidden mt-3 text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-3"></div>
+    </div>
+
+    <!-- STEP 2 — map the columns -->
+    <div id="imp-map" class="hidden space-y-4">
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div class="min-w-0">
+            <h2 class="font-semibold truncate" id="imp-filename"></h2>
+            <div class="text-xs text-slate-500 mt-0.5" id="imp-filemeta"></div>
+          </div>
+          <button id="imp-cancel" class="text-xs text-slate-400 underline shrink-0">Discard</button>
+        </div>
+
+        <div id="imp-matched" class="hidden mb-3 text-sm rounded-lg p-3 border"></div>
+        <ul id="imp-notes" class="hidden mb-4 text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 space-y-1.5 list-disc list-inside"></ul>
+
+        <!-- column roles, one select per column, over a live preview of the file -->
+        <div class="text-xs uppercase tracking-wide text-slate-500 mb-2">Tag each column</div>
+        <div class="overflow-x-auto -mx-5 px-5 pb-1">
+          <table class="text-xs border-separate" style="border-spacing:0">
+            <thead>
+              <tr id="imp-role-row"></tr>
+              <tr id="imp-head-row" class="text-left text-slate-500"></tr>
+            </thead>
+            <tbody id="imp-sample-rows" class="text-slate-400"></tbody>
+          </table>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5 pt-4 border-t border-ink-600">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Date format</label>
+            <select id="imp-dateformat" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm"></select>
+            <div id="imp-datesample" class="text-xs text-slate-500 mt-1"></div>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Amount style</label>
+            <div id="imp-amountmode" class="text-sm bg-ink-700/50 border border-ink-600 rounded-lg px-3 py-2 text-slate-300"></div>
+            <div id="imp-indicator-wrap" class="hidden mt-2">
+              <input id="imp-debitvalues" placeholder="Values meaning debit, e.g. DR, D, W"
+                     class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-xs">
+              <p class="text-[11px] text-amber-300/80 mt-1">
+                Check this column changes per transaction. On many statements the trailing Dr/Cr
+                describes the <em>balance</em> and reads “CR” on every row, including withdrawals.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 text-xs text-slate-400 mt-3">
+          <input type="checkbox" id="imp-cleanocr" class="accent-mint-500">
+          Repair line-wrap artifacts in descriptions (CSV converted from a PDF)
+        </label>
+
+        <button id="imp-validate" class="mt-4 w-full bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold py-2.5 rounded-xl disabled:opacity-40">
+          Check this mapping
+        </button>
+        <div id="imp-map-error" class="hidden mt-3 text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-3"></div>
+      </div>
+    </div>
+
+    <!-- STEP 3 — dry-run result, then import -->
+    <div id="imp-check" class="hidden space-y-4">
+      <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+        <h2 class="font-semibold mb-3">Before importing</h2>
+
+        <div id="chk-account" class="text-sm rounded-lg p-3 border mb-3 bg-ink-700/50 border-ink-600"></div>
+
+        <div id="chk-opening" class="hidden text-sm rounded-lg p-3 border mb-3 bg-amber-500/10 border-amber-500/30">
+          <label class="flex items-start gap-2">
+            <input type="checkbox" id="chk-set-opening" class="accent-mint-500 mt-1" checked>
+            <span class="text-amber-100/90">
+              This account has no opening balance. The statement's first row implies
+              <b id="chk-opening-amount"></b> was in it beforehand — set that as the opening balance.
+              <span class="block text-[11px] text-amber-200/70 mt-1">
+                Without it the account records only this period's net flow, so a normal spending
+                stretch shows a negative balance and drags net worth below zero.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+            <div class="text-xs text-slate-400">Transactions</div><div id="chk-parsed" class="text-xl font-semibold"></div></div>
+          <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+            <div class="text-xs text-slate-400">Already in ledger</div><div id="chk-dupes" class="text-xl font-semibold"></div></div>
+          <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+            <div class="text-xs text-slate-400">Skipped / errors</div><div id="chk-skipped" class="text-xl font-semibold"></div></div>
+          <div class="bg-ink-700/50 rounded-xl p-3 border border-ink-600">
+            <div class="text-xs text-slate-400">Uncategorised</div><div id="chk-untagged" class="text-xl font-semibold"></div></div>
+        </div>
+
+        <div id="chk-balance" class="text-sm rounded-lg p-3 border mb-3"></div>
+        <div id="chk-problems" class="hidden text-xs text-rose-200/90 bg-rose-500/10 border border-rose-500/30 rounded-lg p-3 mb-3 space-y-1"></div>
+        <div id="chk-cats" class="flex flex-wrap gap-1.5 mb-4"></div>
+
+        <div class="text-xs uppercase tracking-wide text-slate-500 mb-2">First rows, as they will be imported</div>
+        <div class="overflow-x-auto -mx-5 px-5">
+          <table class="w-full text-xs">
+            <thead><tr class="text-left text-slate-500 border-b border-ink-600">
+              <th class="py-1.5 pr-2">Date</th><th class="py-1.5 pr-2">Description</th>
+              <th class="py-1.5 pr-2">Category</th><th class="py-1.5 pr-2">Flow</th>
+              <th class="py-1.5 pr-2 text-right">Amount</th><th class="py-1.5 text-right">Balance</th>
+            </tr></thead>
+            <tbody id="chk-rows"></tbody>
+          </table>
+        </div>
+
+        <div id="chk-saveformat" class="mt-4 pt-4 border-t border-ink-600">
+          <label class="flex items-center gap-2 text-sm mb-2">
+            <input type="checkbox" id="chk-remember" class="accent-mint-500" checked>
+            Remember this layout so the next statement imports without mapping
+          </label>
+          <input id="chk-formatname" placeholder="Name this layout, e.g. HDFC Savings"
+                 class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm">
+        </div>
+
+        <div class="flex flex-col sm:flex-row gap-2 mt-4">
+          <button id="chk-back" class="sm:w-40 bg-ink-700 border border-ink-600 rounded-xl py-2.5 text-sm">Back to mapping</button>
+          <button id="chk-import" class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold py-2.5 rounded-xl">Import</button>
+        </div>
+        <div id="chk-error" class="hidden mt-3 text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-3"></div>
+      </div>
+    </div>
+
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-3">Recent uploads</h2>
+      <ul id="uploads-list" class="space-y-2 text-sm"></ul>
+    </div>
+  </section>
+
+  <!-- ============ REVIEW TAB ============ -->
+  <section id="tab-review" class="tab hidden space-y-4">
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <div class="flex flex-wrap items-start justify-between gap-3 mb-1">
+        <h2 class="font-semibold">Review staged transactions</h2>
+        <button id="review-retag" class="hidden text-xs bg-ink-700 border border-ink-600 rounded-lg px-2.5 py-1.5">↻ Re-run tagging</button>
+      </div>
+      <p class="text-sm text-slate-400 mb-4">
+        Auto-tagged rows land here before they touch the ledger. Change a category and it is pinned as
+        <span class="text-slate-300">manual</span> — re-tagging will never overwrite it. Use
+        <span class="text-mint-400">+rule</span> to teach the tagger a merchant once and for all.
+      </p>
+      <select id="review-upload" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 mb-4"></select>
+      <div class="overflow-x-auto -mx-5 px-5">
+        <table class="w-full text-xs sm:text-sm">
+          <thead><tr class="text-left text-slate-500 border-b border-ink-600">
+            <th class="py-2 pr-2">Date</th><th class="py-2 pr-2">Description</th>
+            <th class="py-2 pr-2">Category</th><th class="py-2 pr-2">Src</th><th class="py-2 pr-2">Mode</th>
+            <th class="py-2 pr-2">Flow</th><th class="py-2 pr-2 text-right">Amount ₹</th>
+            <th class="py-2 pr-2 text-center">Self</th><th class="py-2 text-center">Keep</th>
+          </tr></thead>
+          <tbody id="review-rows"></tbody>
+        </table>
+      </div>
+
+      <div id="commit-bar" class="hidden mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-ink-600 pt-4">
+        <div class="text-sm text-slate-400" id="commit-summary"></div>
+        <button id="commit-btn" class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold px-5 py-2 rounded-xl text-sm">
+          Commit to ledger
+        </button>
+      </div>
+      <div id="committed-note" class="hidden mt-4 text-sm text-sky-300 border-t border-ink-600 pt-4"></div>
+    </div>
+  </section>
+
+  <!-- ============ LEDGER TAB ============ -->
+  <section id="tab-ledger" class="tab hidden space-y-6">
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div class="flex items-center gap-2">
+          <button id="ledger-prev" disabled title="Previous month" class="bg-ink-700 border border-ink-600 rounded-lg w-8 h-8 text-sm leading-none opacity-30">‹</button>
+          <h2 id="ledger-title" class="font-semibold min-w-[8.5rem]">Ledger</h2>
+          <button id="ledger-next" disabled title="Next month" class="bg-ink-700 border border-ink-600 rounded-lg w-8 h-8 text-sm leading-none opacity-30">›</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <a id="ledger-export" href="/api/transactions/export" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">⬇ Export CSV</a>
+          <button id="txn-add-btn" class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold px-4 py-1.5 rounded-lg text-sm">+ Add transaction</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 mb-4">
+        <select id="ledger-year"  class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm"></select>
+        <select id="ledger-month" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm"></select>
+        <div class="relative" id="ledger-category-wrap">
+          <button id="ledger-category-btn" type="button" aria-haspopup="true" aria-expanded="false"
+                  class="w-full flex items-center justify-between gap-2 bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">
+            <span id="ledger-category-label" class="truncate">All tags</span>
+            <span class="text-slate-500 text-xs shrink-0">▾</span>
+          </button>
+          <div id="ledger-category-menu"
+               class="hidden absolute z-30 mt-1 w-60 max-h-72 overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-1 shadow-2xl">
+            <button id="ledger-category-clear" type="button"
+                    class="w-full text-left px-2.5 py-1.5 rounded-lg text-sm text-slate-400 hover:bg-ink-700">
+              All tags <span class="text-xs">(clear)</span>
+            </button>
+            <div id="ledger-category-options" class="mt-1 space-y-0.5"></div>
+          </div>
+        </div>
+        <select id="ledger-account" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">
+          <option value="">All accounts</option>
+        </select>
+        <select id="ledger-cashflow" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">
+          <option value="">In &amp; out</option>
+          <option value="credit">Money in</option>
+          <option value="debit">Money out</option>
+        </select>
+        <input id="ledger-search" placeholder="Search description…" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm col-span-2 sm:col-span-1">
+        <input id="ledger-amount" inputmode="text" title="4999 · &gt;1000 · &lt;500 · 1000-2000"
+               placeholder="Amount: 4999, &gt;1000, 100-500"
+               class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm col-span-2 sm:col-span-1">
+      </div>
+      <p id="ledger-amount-hint" class="hidden text-xs text-amber-300 -mt-2 mb-4">
+        Not a valid amount filter — try <code>4999</code>, <code>&gt;1000</code>, <code>&lt;=500</code>
+        or <code>1000-2000</code>. Showing every amount.
+      </p>
+
+      <div id="ledger-summary" class="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm border-y border-ink-600 py-2.5 mb-1"></div>
+      <div id="ledger-truncated" class="hidden text-xs text-amber-300 pt-2"></div>
+
+      <!-- appears once rows are selected -->
+      <div id="ledger-bulk" class="hidden sticky top-0 z-10 my-3 rounded-xl border border-mint-500/40 bg-ink-700/95 backdrop-blur px-3 py-2.5">
+        <div class="flex flex-wrap items-center gap-2">
+          <span id="ledger-bulk-count" class="text-sm font-medium text-mint-400 mr-1"></span>
+          <select id="ledger-bulk-category" class="bg-ink-800 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">
+            <option value="">Change tag to…</option>
+          </select>
+          <button id="ledger-bulk-apply" class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold px-3 py-1.5 rounded-lg text-sm disabled:opacity-40" disabled>Apply tag</button>
+          <span class="w-px h-5 bg-ink-600 mx-1"></span>
+          <button id="ledger-bulk-exclude" class="bg-ink-800 border border-ink-600 hover:border-amber-500/60 px-3 py-1.5 rounded-lg text-sm text-amber-300">⊘ Exclude</button>
+          <button id="ledger-bulk-include" class="bg-ink-800 border border-ink-600 px-3 py-1.5 rounded-lg text-sm text-slate-300">Include</button>
+          <div class="flex-1"></div>
+          <button id="ledger-bulk-clear" class="text-sm text-slate-400 underline px-2">Clear</button>
+        </div>
+        <p class="text-[11px] text-slate-500 mt-1.5">Retagging never changes an account balance.</p>
+      </div>
+
+      <div class="overflow-x-auto -mx-5 px-5">
+        <table class="w-full text-xs sm:text-sm">
+          <thead><tr class="text-left text-slate-500 border-b border-ink-600">
+            <th class="py-2 pr-2 w-8"><input id="ledger-select-all" type="checkbox" class="accent-mint-500 w-4 h-4 align-middle" title="Select all rows shown"></th>
+            <th class="py-2 pr-3">Date</th><th class="py-2 pr-3">Description</th>
+            <th class="py-2 pr-3">Account</th><th class="py-2 pr-3">Mode</th>
+            <th class="py-2 pr-3 text-right">Amount</th>
+            <th id="ledger-balance-head" class="hidden py-2 pr-3 text-right">Balance</th>
+            <th class="py-2 w-28 text-right pr-1">Actions</th>
+          </tr></thead>
+          <tbody id="ledger-rows"></tbody>
+        </table>
+      </div>
+      <div id="ledger-empty" class="hidden text-slate-500 text-sm py-6 text-center"></div>
+    </div>
+  </section>
+
+  <!-- ============ LOGS TAB ============ -->
+  <section id="tab-logs" class="tab hidden space-y-4">
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="font-semibold">Event log</h2>
+          <p class="text-sm text-slate-400">Uploads, CSV parsing, staging, commits, cron and Telegram.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <select id="log-category" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">
+            <option value="">All categories</option>
+            <option value="upload">upload</option><option value="csv_parse">csv_parse</option>
+            <option value="ingest">ingest</option><option value="commit">commit</option>
+            <option value="cron">cron</option><option value="telegram">telegram</option>
+          </select>
+          <select id="log-level" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">
+            <option value="">All levels</option><option value="info">info</option>
+            <option value="success">success</option><option value="warning">warning</option><option value="error">error</option>
+          </select>
+          <button id="log-refresh" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-1.5 text-sm">↻</button>
+          <button id="log-clear" class="bg-ink-700 border border-rose-500/40 text-rose-300 rounded-lg px-3 py-1.5 text-sm">Clear</button>
+        </div>
+      </div>
+      <div class="overflow-x-auto -mx-5 px-5">
+        <table class="w-full text-xs">
+          <thead><tr class="text-left text-slate-500 border-b border-ink-600">
+            <th class="py-2 pr-3">Time</th><th class="py-2 pr-3">Level</th>
+            <th class="py-2 pr-3">Category</th><th class="py-2 pr-3">Event</th>
+            <th class="py-2 pr-3">Upload</th><th class="py-2">Message</th>
+          </tr></thead>
+          <tbody id="log-rows"></tbody>
+        </table>
+      </div>
+      <p id="log-empty" class="hidden text-sm text-slate-500 py-6 text-center">No events yet.</p>
+    </div>
+  </section>
+
+  <!-- ============ SETTINGS TAB ============ -->
+  <section id="tab-settings" class="tab hidden">
+
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-3">Accounts</h2>
+      <ul id="accounts-list" class="space-y-1.5 text-sm mb-4"></ul>
+      <form id="account-form" class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+        <input name="name" required placeholder="Account name" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        <select name="type" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <option value="savings">Savings</option><option value="current">Current</option>
+          <option value="credit_card">Credit card</option><option value="loan">Loan</option>
+          <option value="epfo">EPFO</option><option value="investment">Investment</option>
+          <option value="cash">Cash</option><option value="wallet">Wallet</option>
+          <option value="fd_rd">FD / RD</option><option value="other">Other</option>
+        </select>
+        <button class="bg-ink-600 hover:bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 font-semibold">+ Add account</button>
+      </form>
+      <div class="mt-3">
+        <button id="toggle-archived" class="text-xs text-slate-400 underline">Show archived accounts</button>
+        <ul id="archived-list" class="hidden space-y-1.5 text-sm mt-2"></ul>
+      </div>
+    </div>
+
+    <!-- Budgets -->
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-1">Budgets</h2>
+      <p class="text-sm text-slate-400 mb-4">Set a monthly spending limit; the dashboard shows the derived daily budget and what you can still spend per day.</p>
+      <ul id="budgets-list" class="space-y-2 text-sm mb-4"></ul>
+      <form id="budget-form" class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+        <select name="category" id="budget-category" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <option value="">Overall (whole month)</option>
+        </select>
+        <input name="amount" type="number" step="0.01" min="0" required placeholder="Monthly limit ₹" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        <button class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-lg px-3 py-2">Save budget</button>
+      </form>
+    </div>
+
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-1">Saved CSV layouts</h2>
+      <p class="text-sm text-slate-400 mb-4">
+        One per bank, matched by the statement's header row. Delete a layout to be asked to map it again.
+      </p>
+      <ul id="formats-list" class="space-y-2 text-sm"></ul>
+    </div>
+
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-1">Excluded tags</h2>
+      <p class="text-sm text-slate-400 mb-1">
+        Tags ticked here are left out of every income and expense figure — analytics, budgets,
+        dashboard averages and month-on-month.
+      </p>
+      <p class="text-xs text-slate-500 mb-4">
+        Your account balances are never affected. They are recomputed from every transaction in the
+        ledger, so an account always reconciles to the closing balance on its statement.
+      </p>
+      <ul id="exclusions-list" class="space-y-1 text-sm max-h-96 overflow-y-auto pr-1"></ul>
+      <div id="exclusions-status" class="hidden text-xs mt-3"></div>
+      <button id="exclusions-save" class="mt-4 w-full bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold py-2 rounded-xl disabled:opacity-40">
+        Save excluded tags
+      </button>
+    </div>
+
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-1">Self-transfer identity</h2>
+      <p class="text-sm text-slate-400 mb-4">
+        Money moving between your own accounts is excluded from income and expense. Names are matched by
+        prefix (banks truncate them); UPI handles tolerate small typos from scanned statements.
+      </p>
+      <form id="identity-form" class="space-y-3 text-sm">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Your names, as they appear on statements</label>
+          <textarea name="names" rows="2" placeholder="NAIR AKHIL VEN&#10;AKHIL NAIR"
+                    class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm font-mono text-xs"></textarea>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Your UPI handles</label>
+          <textarea name="vpas" rows="2" placeholder="akhil6169@okhdfcbank&#10;akhil6169-3@okaxis"
+                    class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm font-mono text-xs"></textarea>
+        </div>
+        <p class="text-[11px] text-slate-500">One per line.</p>
+        <button class="w-full bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold py-2 rounded-xl">Save identity</button>
+      </form>
+    </div>
+
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <div class="flex items-baseline justify-between gap-2 mb-1">
+        <h2 class="font-semibold">Tagging rules</h2>
+        <span id="rules-count" class="text-xs text-slate-500"></span>
+      </div>
+      <p class="text-sm text-slate-400 mb-3">
+        Checked top to bottom: highest priority first, then the longest pattern. The first match wins.
+      </p>
+      <input id="rules-filter" placeholder="Filter rules…" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm mb-3">
+      <ul id="rules-list" class="space-y-1.5 text-sm max-h-96 overflow-y-auto pr-1"></ul>
+
+      <form id="rule-form" class="mt-4 pt-4 border-t border-ink-600 space-y-2 text-sm">
+        <div class="grid grid-cols-2 gap-2">
+          <input name="pattern" required placeholder="Text to match, e.g. BLINKIT"
+                 class="col-span-2 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <select name="match_type" class="bg-ink-700 border border-ink-600 rounded-lg px-2 py-2 text-xs">
+            <option value="contains">contains</option><option value="prefix">starts with</option>
+            <option value="equals">equals</option><option value="regex">regex</option>
+          </select>
+          <select name="cashflow" class="bg-ink-700 border border-ink-600 rounded-lg px-2 py-2 text-xs">
+            <option value="">any direction</option><option value="debit">debit only</option><option value="credit">credit only</option>
+          </select>
+          <select name="category" required id="rule-category" class="col-span-2 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></select>
+        </div>
+        <button class="w-full bg-ink-700 border border-ink-600 hover:border-mint-500 py-2 rounded-xl">Add rule</button>
+      </form>
+    </div>
+
+    <!-- Telegram notifications -->
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-1">Telegram notifications</h2>
+      <p id="tg-status" class="text-sm text-slate-400 mb-4"></p>
+      <form id="tg-form" class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Chat ID</label>
+          <input name="chat_id" placeholder="e.g. 123456789" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Daily summary time</label>
+          <input name="daily_summary_time" type="time" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        </div>
+        <div class="sm:col-span-2 flex flex-wrap gap-2 mt-1">
+          <button class="bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold px-4 py-2 rounded-xl">Save</button>
+          <button type="button" id="tg-test" class="bg-ink-600 border border-ink-600 rounded-xl px-4 py-2 font-semibold">Send test</button>
+          <button type="button" id="tg-summary" class="bg-ink-600 border border-ink-600 rounded-xl px-4 py-2 font-semibold">Run daily summary now</button>
+        </div>
+      </form>
+      <p class="text-xs text-slate-500 mt-2">Bot token lives in <code>.env</code> (<code>TELEGRAM_BOT_TOKEN</code>). Message @BotFather to create one; message your bot then check <code>/getUpdates</code> for your chat ID.</p>
+      <pre id="tg-preview" class="hidden mt-3 text-xs bg-ink-900 border border-ink-600 rounded-lg p-3 whitespace-pre-wrap"></pre>
+    </div>
+
+    <!-- Recurring reminders -->
+    <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
+      <h2 class="font-semibold mb-1">Reminders</h2>
+      <p class="text-sm text-slate-400 mb-4">Recurring nudges pushed to Telegram (e.g. "Upload HDFC statement" on the 30th).</p>
+      <ul id="reminders-list" class="space-y-2 text-sm mb-5"></ul>
+
+      <form id="reminder-form" class="space-y-3 text-sm bg-ink-700/50 rounded-xl p-4 border border-ink-600">
+        <input name="title" required placeholder="Title (e.g. Upload HDFC statement)" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        <input name="message" placeholder="Optional message body" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        <div class="grid grid-cols-2 gap-2">
+          <select name="schedule_type" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+            <option value="monthly">Monthly</option><option value="weekly">Weekly</option>
+            <option value="daily">Daily</option><option value="once">Once</option>
+          </select>
+          <input name="time_of_day" type="time" value="09:00" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        </div>
+        <div id="rem-monthly" class="rem-cond">
+          <label class="block text-xs text-slate-400 mb-1">Day of month</label>
+          <input name="day_of_month" type="number" min="1" max="31" value="1" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        </div>
+        <div id="rem-weekly" class="rem-cond hidden">
+          <label class="block text-xs text-slate-400 mb-1">Day of week</label>
+          <select name="day_of_week" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+            <option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option>
+            <option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
+          </select>
+        </div>
+        <div id="rem-once" class="rem-cond hidden">
+          <label class="block text-xs text-slate-400 mb-1">Run at</label>
+          <input name="next_run_at" type="datetime-local" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        </div>
+        <button id="reminder-submit" class="w-full bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold py-2 rounded-xl">Add reminder</button>
+      </form>
+    </div>
+  </section>
+  </div>
+</main>
+
+<!-- ============ UPLOAD DETAILS / ERROR MODAL ============ -->
+<dialog id="error-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(92vw,30rem)]">
+  <div class="p-6 space-y-4">
+    <div class="flex items-start justify-between gap-3">
+      <h3 class="font-bold text-lg">Upload details</h3>
+      <span id="err-status" class="chip"></span>
+    </div>
+    <div class="text-sm">
+      <div id="err-filename" class="font-semibold text-mint-400 break-all"></div>
+      <div id="err-meta" class="text-xs text-slate-500 mt-0.5"></div>
+    </div>
+    <div id="err-message-wrap" class="hidden">
+      <div class="text-xs uppercase tracking-wide text-rose-300 mb-1">Error</div>
+      <pre id="err-message" class="text-xs bg-ink-900 border border-rose-500/30 rounded-lg p-3 whitespace-pre-wrap break-all max-h-48 overflow-y-auto"></pre>
+    </div>
+    <div id="err-warnings-wrap" class="hidden">
+      <div class="text-xs uppercase tracking-wide text-amber-300 mb-1">Parser warnings</div>
+      <ul id="err-warnings" class="text-xs bg-ink-900 border border-amber-500/30 rounded-lg p-3 space-y-1 max-h-48 overflow-y-auto list-disc list-inside"></ul>
+    </div>
+    <p id="err-hint" class="hidden text-xs text-slate-500">Re-map to pick the columns again, or discard the upload.</p>
+    <div class="flex gap-2">
+      <button id="err-close" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2 text-sm">Close</button>
+      <button id="err-discard" class="hidden flex-1 bg-ink-700 border border-rose-500/40 text-rose-300 rounded-xl py-2 text-sm">Discard</button>
+      <button id="err-remap" class="hidden flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2 text-sm">Re-map</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============ ACCOUNT EDIT MODAL ============ -->
+<dialog id="account-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(92vw,28rem)]">
+  <form id="account-edit-form" class="p-6 space-y-3 text-sm">
+    <div class="flex items-center justify-between">
+      <h3 class="font-bold text-lg">Edit account</h3>
+      <span id="acct-type-badge" class="chip bg-ink-600"></span>
+    </div>
+    <input type="hidden" name="id">
+    <input type="hidden" name="color">
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Name</label>
+      <input name="name" required class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Colour</label>
+      <div id="acct-swatches" class="flex flex-wrap gap-2"></div>
+      <p class="text-[11px] text-slate-500 mt-1.5">
+        Shown wherever this account is named. It tints dots and rules only — never a balance.
+      </p>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Institution</label>
+        <input name="institution" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Opening balance ₹</label>
+        <input name="opening_balance" type="number" step="0.01" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+    </div>
+    <label class="flex items-center gap-2 text-slate-400">
+      <input type="checkbox" name="include_in_networth" class="accent-mint-500"> Include in net worth
+    </label>
+
+    <!-- Debt fields (liabilities only) -->
+    <div id="acct-debt" class="hidden space-y-2 border-t border-ink-600 pt-3">
+      <div class="text-xs uppercase tracking-wide text-rose-300">Debt details</div>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="block text-xs text-slate-400 mb-1">Interest rate % APR</label>
+          <input name="interest_rate_apr" type="number" step="0.01" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></div>
+        <div><label class="block text-xs text-slate-400 mb-1">Credit limit ₹</label>
+          <input name="credit_limit" type="number" step="0.01" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></div>
+        <div><label class="block text-xs text-slate-400 mb-1">EMI amount ₹</label>
+          <input name="emi_amount" type="number" step="0.01" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></div>
+        <div><label class="block text-xs text-slate-400 mb-1">EMI day of month</label>
+          <input name="emi_day_of_month" type="number" min="1" max="31" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></div>
+      </div>
+    </div>
+
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="acct-archive" class="bg-rose-500/20 text-rose-300 rounded-xl px-4 py-2 text-sm">Archive</button>
+      <button type="button" id="acct-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ ADD / EDIT TRANSACTION MODAL ============ -->
+<dialog id="txn-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(92vw,28rem)]">
+  <form id="txn-form" class="p-6 space-y-3 text-sm">
+    <h3 id="txn-modal-title" class="font-bold text-lg">Add transaction</h3>
+    <input type="hidden" name="id">
+    <select name="account_id" required class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2" id="txn-account"></select>
+    <div class="grid grid-cols-2 gap-2">
+      <input name="txn_date" type="date" required class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      <select name="cashflow" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        <option value="debit">Debit (out)</option><option value="credit">Credit (in)</option>
+      </select>
+    </div>
+    <input name="description" required placeholder="Description" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    <div class="grid grid-cols-2 gap-2">
+      <input name="amount" type="number" step="0.01" min="0" required placeholder="Amount ₹" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      <select name="category" id="txn-category" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></select>
+    </div>
+    <label class="flex items-center gap-2 text-slate-400">
+      <input type="checkbox" name="is_self_transfer" class="accent-sky-500"> Self-transfer (exclude from income/expense)
+    </label>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="txn-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ ADD / EDIT LOAN MODAL ============ -->
+<dialog id="loan-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(94vw,34rem)]">
+  <form id="loan-form" class="p-6 space-y-3 text-sm">
+    <h3 id="loan-modal-title" class="font-bold text-lg">Add loan</h3>
+    <input type="hidden" name="id">
+    <div class="grid grid-cols-2 gap-2">
+      <input name="name" required placeholder="Name, e.g. Home Loan" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      <input name="lender" placeholder="Lender, e.g. HDFC" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    </div>
+    <select name="loan_type" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      <option value="home">Home</option><option value="personal">Personal</option>
+      <option value="auto">Auto</option><option value="education">Education</option>
+      <option value="gold">Gold</option><option value="business">Business</option>
+      <option value="other" selected>Other</option>
+    </select>
+    <div class="grid grid-cols-2 gap-2">
+      <label class="text-xs text-slate-400">Sanctioned ₹ <span class="text-slate-600">— the ceiling</span>
+        <input name="principal" type="number" step="0.01" min="1" required class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+      <label class="text-xs text-slate-400">Interest rate % a year
+        <input name="interest_rate_apr" type="number" step="0.01" min="0" max="99.99" required class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <label class="text-xs text-slate-400">Disbursed on
+        <input name="start_date" type="date" required class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+      <label class="text-xs text-slate-400">First EMI on
+        <input name="first_emi_date" type="date" required class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <label class="text-xs text-slate-400">Tenure (months)
+        <input name="tenure_months" type="number" min="1" max="600" required class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+      <label class="text-xs text-slate-400">EMI ₹ <span class="text-slate-600">— leave blank to compute</span>
+        <input name="emi_amount" type="number" step="0.01" min="0" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+    </div>
+    <details class="bg-ink-700/30 border border-ink-600 rounded-lg px-3 py-2">
+      <summary class="text-xs text-slate-400 cursor-pointer">Under construction? Tranches &amp; tax</summary>
+      <div class="grid grid-cols-2 gap-2 mt-3">
+        <label class="text-xs text-slate-400">Possession on
+          <input name="possession_date" type="date" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+        </label>
+        <label class="text-xs text-slate-400">Pre-EMI interest is
+          <select name="pre_emi_mode" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+            <option value="pay">Debited monthly (usual)</option>
+            <option value="capitalise">Added to the loan</option>
+          </select>
+        </label>
+      </div>
+      <p class="text-xs text-slate-500 mt-2">
+        Add each tranche as a <strong>Disbursement</strong> once the loan exists. Possession matters for tax:
+        interest paid before you get the keys is claimed in five equal yearly instalments after,
+        not in the year you paid it.
+      </p>
+    </details>
+    <input name="notes" placeholder="Notes (optional)" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    <p class="text-xs text-slate-500">
+      A loan gets its own liability account, so your net worth drops by the outstanding
+      principal — only what has actually been disbursed. Nothing is added to the ledger.
+    </p>
+    <p id="loan-form-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5"></p>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="loan-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ ADD LOAN EVENT MODAL ============ -->
+<dialog id="event-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(94vw,30rem)]">
+  <form id="event-form" class="p-6 space-y-3 text-sm">
+    <h3 id="event-modal-title" class="font-bold text-lg">Add a change</h3>
+    <select name="event_type" id="event-type" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      <option value="prepayment">Prepayment — a lump sum off the principal</option>
+      <option value="disbursement">Disbursement — a tranche the bank released</option>
+      <option value="rate_change">Rate change — the bank revised your interest</option>
+      <option value="emi_change">EMI change — you set a new instalment</option>
+    </select>
+    <label class="text-xs text-slate-400 block">Effective from
+      <input name="effective_date" type="date" required class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      <span class="text-slate-600">Applies from that month's instalment onward.</span>
+    </label>
+
+    <div data-ev="prepayment" class="space-y-3">
+      <label class="text-xs text-slate-400 block">Amount ₹
+        <input name="amount" type="number" step="0.01" min="1" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+      <label class="text-xs text-slate-400 block">Then what?
+        <select name="prepay_mode" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <option value="reduce_tenure">Keep the EMI, finish earlier (saves more interest)</option>
+          <option value="reduce_emi">Keep the end date, lower the EMI</option>
+        </select>
+      </label>
+    </div>
+
+    <div data-ev="disbursement" class="space-y-3 hidden">
+      <label class="text-xs text-slate-400 block">Tranche amount ₹
+        <input name="disb_amount" type="number" step="0.01" min="1" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+      <label class="text-xs text-slate-400 block">If this lands after your EMI has started
+        <select name="disb_mode" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <option value="keep_emi">Keep the EMI, extend the tenure</option>
+          <option value="keep_tenure">Keep the end date, recalculate the EMI</option>
+        </select>
+      </label>
+      <p class="text-xs text-slate-500">
+        Interest accrues only on what the bank has actually released. Until the last tranche
+        lands you pay interest on the drawn amount and no principal.
+      </p>
+    </div>
+
+    <div data-ev="rate_change" class="space-y-3 hidden">
+      <label class="text-xs text-slate-400 block">New rate % a year
+        <input name="rate_apr" type="number" step="0.01" min="0" max="99.99" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+      <label class="text-xs text-slate-400 block">How did the bank apply it?
+        <select name="rate_mode" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <option value="keep_emi">Kept my EMI, extended the tenure (the usual)</option>
+          <option value="keep_tenure">Kept the end date, changed my EMI</option>
+        </select>
+      </label>
+    </div>
+
+    <div data-ev="emi_change" class="space-y-3 hidden">
+      <label class="text-xs text-slate-400 block">New EMI ₹
+        <input name="emi_amount" type="number" step="0.01" min="1" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </label>
+    </div>
+
+    <input name="note" placeholder="Note (optional)" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    <p id="event-form-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5"></p>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="event-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button id="event-save" class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ LINK TRANSACTION TO A LOAN INSTALMENT ============ -->
+<dialog id="link-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(94vw,32rem)]">
+  <div class="p-6 space-y-3 text-sm">
+    <h3 class="font-bold text-lg">Mark an EMI as paid</h3>
+    <div id="link-txn" class="text-xs text-slate-400 bg-ink-700/60 border border-ink-600 rounded-lg p-3"></div>
+    <label class="text-xs text-slate-400 block">Loan
+      <select id="link-loan" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></select>
+    </label>
+    <label class="text-xs text-slate-400 block">Instalment
+      <select id="link-period" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></select>
+      <span class="text-slate-600">Unpaid instalments only, nearest this transaction's date first.</span>
+    </label>
+    <p id="link-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5"></p>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="link-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button type="button" id="link-save" class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Link</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Holding create/edit -->
+<dialog id="inv-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(94vw,32rem)]">
+  <form id="inv-form" class="p-6 space-y-3 text-sm">
+    <h3 id="inv-modal-title" class="font-bold text-lg">Add holding</h3>
+    <input type="hidden" name="id">
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Name</label>
+      <input name="name" required placeholder="e.g. Nifty 50 Index Fund" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Type</label>
+        <select name="instrument_type" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <option value="equity">Stocks / Equity</option>
+          <option value="mutual_fund">Mutual fund</option>
+          <option value="gold">Gold</option>
+          <option value="fd_rd">Fixed deposit / RD</option>
+          <option value="bond">Bonds / debt</option>
+          <option value="ppf_epf">PPF / EPF</option>
+          <option value="crypto">Crypto</option>
+          <option value="real_estate">Real estate</option>
+          <option value="nps">NPS</option>
+          <option value="insurance">ULIP / insurance</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Platform</label>
+        <input name="platform" placeholder="Zerodha, Groww…" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Expected return % a year <span class="text-slate-600">(optional)</span></label>
+      <input name="expected_return_apr" type="number" step="0.1" placeholder="blank = use realised XIRR, then a type default"
+             class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    </div>
+    <p id="inv-form-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5"></p>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="inv-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button type="submit" id="inv-save" class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Investment event -->
+<dialog id="ievent-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(94vw,30rem)]">
+  <form id="ievent-form" class="p-6 space-y-3 text-sm">
+    <h3 id="ievent-modal-title" class="font-bold text-lg">Add a cashflow</h3>
+    <input type="hidden" name="id">
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">What</label>
+        <select name="event_type" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+          <option value="buy">Buy</option>
+          <option value="contribution">Contribution / SIP</option>
+          <option value="sell">Sell</option>
+          <option value="withdrawal">Withdrawal</option>
+          <option value="dividend">Dividend / interest</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Date</label>
+        <input name="event_date" type="date" required class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Amount ₹</label>
+      <input name="amount" type="number" step="0.01" min="0.01" required class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Units <span class="text-slate-600">(optional)</span></label>
+        <input name="units" type="number" step="0.0001" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Price / unit ₹ <span class="text-slate-600">(optional)</span></label>
+        <input name="price" type="number" step="0.01" class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+    </div>
+    <p id="ievent-form-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5"></p>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="ievent-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button type="submit" id="ievent-save" class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Valuation -->
+<dialog id="ival-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(94vw,28rem)]">
+  <form id="ival-form" class="p-6 space-y-3 text-sm">
+    <h3 class="font-bold text-lg">Record a value</h3>
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Worth ₹</label>
+        <input name="value" type="number" step="0.01" min="0" required class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">On date</label>
+        <input name="valued_on" type="date" required class="w-full bg-ink-700 border border-ink-600 rounded-lg px-3 py-2">
+      </div>
+    </div>
+    <p class="text-[11px] text-slate-500">Re-recording a date replaces that day's value. The most recent date is the current value and feeds net worth.</p>
+    <p id="ival-form-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5"></p>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="ival-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button type="submit" id="ival-save" class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Link a ledger debit to a holding -->
+<dialog id="ilink-modal" class="bg-ink-800 text-slate-200 rounded-2xl border border-ink-600 p-0 w-[min(94vw,32rem)]">
+  <div class="p-6 space-y-3 text-sm">
+    <h3 class="font-bold text-lg">Tag as an investment</h3>
+    <div id="ilink-txn" class="text-xs text-slate-400 bg-ink-700/60 border border-ink-600 rounded-lg p-3"></div>
+    <label class="text-xs text-slate-400 block">Holding
+      <select id="ilink-holding" class="w-full mt-1 bg-ink-700 border border-ink-600 rounded-lg px-3 py-2"></select>
+    </label>
+    <p id="ilink-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5"></p>
+    <div class="flex gap-2 pt-1">
+      <button type="button" id="ilink-cancel" class="flex-1 bg-ink-700 border border-ink-600 rounded-xl py-2">Cancel</button>
+      <button type="button" id="ilink-save" class="flex-1 bg-mint-500 hover:bg-mint-400 text-ink-900 font-bold rounded-xl py-2">Link</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Mobile bottom nav -->
+<nav class="md:hidden fixed bottom-0 inset-x-0 z-20 bg-ink-800/95 backdrop-blur border-t border-ink-600 grid grid-cols-10 text-[10px]" data-nav>
+  <button data-tab="dashboard" class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">📊</span>Home</button>
+  <button data-tab="analytics" class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">📈</span>Stats</button>
+  <button data-tab="loans"     class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">🏦</span>Loans</button>
+  <button data-tab="investments" class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">💹</span>Invest</button>
+  <button data-tab="budget"    class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">🎯</span>Budget</button>
+  <button data-tab="ledger"    class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">📒</span>Ledger</button>
+  <button data-tab="upload"    class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">📤</span>Upload</button>
+  <button data-tab="review"    class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">📝</span>Review</button>
+  <button data-tab="logs"      class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">📜</span>Logs</button>
+  <button data-tab="settings"  class="nav-btn py-2 flex flex-col items-center gap-0.5 text-[10px]"><span class="text-base">⚙️</span>More</button>
+</nav>
+
+<!-- ============ GLOBAL BUSY VEIL ============ -->
+<dialog id="busy" aria-label="Loading" aria-busy="true">
+  <div class="busy-ring" role="status"></div>
+</dialog>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

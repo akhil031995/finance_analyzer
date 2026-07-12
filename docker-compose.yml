@@ -1,0 +1,50 @@
+# NOTE on DNS: the LAN router refuses DNS queries from the Docker bridge
+# subnet, so builds run on the host network and runtime containers pin public
+# resolvers. Remove `network: host` / `dns:` if the network changes.
+services:
+  app:
+    build:
+      context: .
+      network: host      # composer install needs working DNS at build time
+    container_name: finance_app
+    dns: [1.1.1.1, 8.8.8.8]
+    # ports:
+    #   - "8899:80"        # host 8899 -> Apache listens on 80 inside the container
+    env_file: .env
+    environment:
+      DB_PATH: /var/www/html/data/finance.sqlite
+      # Bind mounts below are owned by the host user (uid 1000), so Apache
+      # workers must run as that uid instead of www-data ('#' = numeric id).
+      APACHE_RUN_USER: "#1000"
+      APACHE_RUN_GROUP: "#1000"
+    volumes:
+      # Dev mode: whole project (source, vendor/, data/, uploads) is bind-
+      # mounted, so PHP/JS/CSS edits apply on refresh — no rebuild/restart.
+      # Rebuild is only needed for Dockerfile/php.ini changes; run
+      # ./bin/deps.sh when composer.json changes.
+      - .:/var/www/html
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Scheduler: runs every minute; fires the daily Telegram summary,
+  # end-of-day balance snapshots, and user-configured reminders.
+  cron:
+    build:
+      context: .
+      network: host
+    container_name: finance_cron
+    dns: [1.1.1.1, 8.8.8.8]
+    user: "1000:1000"    # same uid as Apache workers — both write the shared SQLite file
+    env_file: .env
+    environment:
+      DB_PATH: /var/www/html/data/finance.sqlite
+    volumes:
+      - .:/var/www/html
+    command: ["php", "bin/cron.php", "--loop"]
+    depends_on:
+      - app
+    restart: unless-stopped
