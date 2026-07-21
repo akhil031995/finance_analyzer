@@ -257,9 +257,11 @@ async function loadDashboard() {
    useless as a spending signal. Split it: EMI is contractual, the remainder is
    discretionary + commitments you could actually change. */
 function renderMonthlyAverage(a) {
+  // "the last N" matters: this is a rolling window, not the whole ledger. Saying
+  // "across 12 completed months" reads like the ledger only holds 12.
   const completed = a.complete_months ?? 0;
   $('#stat-monthly-sub').textContent = completed
-    ? `across ${completed} completed month${completed === 1 ? '' : 's'}`
+    ? `across the last ${completed} complete month${completed === 1 ? '' : 's'}`
     : 'completed months only';
 
   $('#stat-monthly-ex-emi').textContent = inr(a.monthly_expense_ex_emi);
@@ -611,34 +613,102 @@ function renderBudget(b) {
 }
 
 /* ---------------- budget page (deep analysis) ---------------- */
+/* ---------------- budget page ----------------
+   Every figure on this page is derived from the category list, so the
+   include/exclude checkboxes are a pure view filter: no API call, nothing
+   saved. The recomputation below mirrors BudgetService::status() exactly —
+   with nothing excluded it reproduces the server's own numbers. */
+const budgetState = { data: null, excluded: new Set(), month: null };   // month null = current
+
 async function loadBudgetPage() {
-  const a = (await api('/api/budgets/analysis')).body;
+  const qs = budgetState.month ? '?month=' + budgetState.month : '';
+  const a = (await api('/api/budgets/analysis' + qs)).body;
+  budgetState.data = a;
+  budgetState.month = a?.month ?? budgetState.month;   // trust the server's resolution
+  // A category that has vanished between loads must not stay excluded forever.
+  const known = new Set((a?.categories ?? []).map((c) => c.category));
+  budgetState.excluded = new Set([...budgetState.excluded].filter((c) => known.has(c)));
+  renderBudgetPage();
+}
+
+function renderBudgetPage() {
+  const a = budgetState.data;
   const hasContent = a && (a.overall || (a.categories && a.categories.length));
   $('#budget-page-empty').classList.toggle('hidden', !!hasContent);
   $('#budget-page-body').classList.toggle('hidden', !hasContent);
   if (!hasContent) return;
 
+  const all = a.categories ?? [];
+  const shown = all.filter((c) => !budgetState.excluded.has(c.category));
+  const filtered = shown.length !== all.length;
+
+  // --- totals over the ticked categories only ---
+  const spent = shown.reduce((t, c) => t + c.spent, 0);
+  const budgeted = shown.reduce((t, c) => t + (c.budget ?? 0), 0);
+  const spending = shown.filter((c) => c.spent > 0).length;
+
+  renderBudgetPeriod(a);
+  $('#bp-month').textContent = '· ' + MONTH_LABEL(a.month);
+  $('#bp-spent-label').textContent = a.month === new Date().toISOString().slice(0, 7)
+    ? 'Spent this month' : 'Spent in';
+  $('#bp-spent').textContent = inr(spent);
+  $('#bp-total-budgeted').textContent = inr(budgeted);
+  $('#bp-cat-count').textContent = spending;
+
+  const note = $('#bp-filter-note');
+  note.classList.toggle('hidden', !filtered);
+  if (filtered) note.textContent = `${shown.length} of ${all.length} categories`;
+  $('#bp-selected-count').textContent = `${shown.length} of ${all.length} selected`;
+
   const o = a.overall;
+
+  // What you are actually burning per elapsed day, as opposed to the allowance.
+  // Days elapsed comes from the server when there is a budget (so it matches
+  // BudgetService exactly); otherwise it is derived the same way — today's date
+  // for the running month, the whole month for one already finished.
+  const [yy, mm] = a.month.split('-').map(Number);
+  const today = new Date();
+  const isCurrentMonth = today.getFullYear() === yy && today.getMonth() + 1 === mm;
+  const daysInMonth = new Date(yy, mm, 0).getDate();
+  const daysElapsed = o ? o.day : (isCurrentMonth ? today.getDate() : daysInMonth);
+  const actualPerDay = daysElapsed > 0 ? Math.round(spent / daysElapsed) : 0;
+
+  $('#bp-actual-daily').textContent = inr(actualPerDay);
+  if (o && o.daily > 0) {
+    const over = actualPerDay > o.daily;
+    $('#bp-actual-daily').className = 'font-semibold text-sm mt-0.5 ' + (over ? 'text-rose-300' : 'text-mint-400');
+    $('#bp-actual-daily-sub').textContent = over
+      ? `${(actualPerDay / o.daily).toFixed(1)}× allowance`
+      : `${Math.round((actualPerDay / o.daily) * 100)}% of allowance`;
+  } else {
+    $('#bp-actual-daily').className = 'font-semibold text-sm mt-0.5';
+    $('#bp-actual-daily-sub').textContent = `over ${daysElapsed} day${daysElapsed === 1 ? '' : 's'}`;
+  }
+
   if (o) {
-    $('#bp-month').textContent = '· ' + MONTH_LABEL(a.month);
-    $('#bp-spent').textContent = inr(o.spent);
+    // Same formulas as BudgetService::status(), applied to the filtered spend.
+    // `monthly` and `daily` are the budget itself, so filtering never moves them.
+    const remaining = o.monthly - spent;
+    const dailyRemaining = o.days_remaining > 0 ? Math.round(Math.max(0, remaining) / o.days_remaining) : 0;
+    const spentPct = o.monthly > 0 ? Math.round((spent / o.monthly) * 1000) / 10 : 0;
+    const onTrack = spent <= Math.round(o.daily * o.day);
+    const overBudget = remaining < 0;
+
     $('#bp-monthly').textContent = inr(o.monthly);
     $('#bp-daily').textContent = inr(o.daily);
-    $('#bp-remaining').textContent = inr(o.remaining);
-    $('#bp-remaining').className = 'font-semibold text-sm mt-0.5 ' + (o.remaining < 0 ? 'text-rose-300' : 'text-slate-200');
-    $('#bp-daily-remaining').textContent = inr(o.daily_remaining);
+    $('#bp-remaining').textContent = inr(remaining);
+    $('#bp-remaining').className = 'font-semibold text-sm mt-0.5 ' + (remaining < 0 ? 'text-rose-300' : 'text-slate-200');
+    $('#bp-daily-remaining').textContent = inr(dailyRemaining);
     $('#bp-days-left').textContent = `for ${o.days_remaining} day${o.days_remaining === 1 ? '' : 's'}`;
-    const pct = Math.min(100, o.spent_pct);
-    $('#bp-bar').style.width = pct + '%';
-    $('#bp-bar').style.background = o.over_budget ? '#e11d48' : (o.on_track ? '#10b981' : '#f59e0b');
+    $('#bp-bar').style.width = Math.min(100, spentPct) + '%';
+    $('#bp-bar').style.background = overBudget ? '#e11d48' : (onTrack ? '#10b981' : '#f59e0b');
+
     const pace = $('#bp-pace');
-    if (o.over_budget) { pace.textContent = 'Over budget'; pace.className = 'chip bg-rose-500/20 text-rose-300'; }
-    else if (o.on_track) { pace.textContent = 'On track'; pace.className = 'chip bg-mint-500/20 text-mint-400'; }
+    if (overBudget) { pace.textContent = 'Over budget'; pace.className = 'chip bg-rose-500/20 text-rose-300'; }
+    else if (onTrack) { pace.textContent = 'On track'; pace.className = 'chip bg-mint-500/20 text-mint-400'; }
     else { pace.textContent = 'Ahead of pace'; pace.className = 'chip bg-amber-500/20 text-amber-300'; }
   } else {
-    // No overall budget: show spend as the hero, no limit.
-    $('#bp-month').textContent = '· ' + MONTH_LABEL(a.month);
-    $('#bp-spent').textContent = inr(a.totals.spent);
+    // No overall budget: the spend is the headline, with nothing to measure against.
     $('#bp-monthly').textContent = 'no overall budget';
     ['#bp-daily', '#bp-remaining', '#bp-daily-remaining', '#bp-days-left'].forEach((s) => $(s).textContent = '—');
     $('#bp-bar').style.width = '0%';
@@ -646,33 +716,84 @@ async function loadBudgetPage() {
     $('#bp-pace').className = 'chip bg-ink-600 text-slate-300';
   }
 
-  $('#bp-total-budgeted').textContent = inr(a.totals.budgeted);
-  $('#bp-cat-count').textContent = a.totals.categories_spending;
-
-  // Per-category bars: spent vs budget, sorted by spend. Scale bars to the
-  // largest of (spend, budget) across categories so they're comparable.
-  const maxVal = Math.max(1, ...a.categories.map((c) => Math.max(c.spent, c.budget ?? 0)));
-  $('#bp-categories').innerHTML = a.categories.map((c) => {
-    const spentW = (c.spent / maxVal) * 100;
-    const budgetW = c.budget ? (c.budget / maxVal) * 100 : 0;
+  // --- rows ---
+  // Bars scale to the largest ticked value, and each share is of the ticked
+  // total, so the visible slices always add up to what the hero reports.
+  const maxVal = Math.max(1, ...shown.map((c) => Math.max(c.spent, c.budget ?? 0)));
+  $('#bp-categories').innerHTML = all.map((c) => {
+    const on = !budgetState.excluded.has(c.category);
+    const spentW = on ? (c.spent / maxVal) * 100 : 0;
+    const budgetW = on && c.budget ? (c.budget / maxVal) * 100 : 0;
     const barColor = c.over_budget ? '#e11d48' : (c.budget ? '#10b981' : '#64748b');
+    const share = on && spent > 0 ? Math.round((c.spent / spent) * 1000) / 10 : 0;
     const right = c.budget
       ? `<span class="${c.over_budget ? 'text-rose-300' : 'text-slate-400'}">${inr0(c.spent)} / ${inr0(c.budget)} · ${c.budget_pct}%</span>`
       : `<span class="text-slate-500">${inr0(c.spent)} · no budget</span>`;
     return `
-      <div>
-        <div class="flex items-center justify-between text-sm mb-1">
-          <span class="font-medium">${esc(c.category)} <span class="text-slate-500 text-xs">· ${c.txns} txn${c.txns === 1 ? '' : 's'} · ${c.share_pct}% of spend</span></span>
+      <div class="${on ? '' : 'opacity-40'}">
+        <div class="flex items-center justify-between text-sm mb-1 gap-3">
+          <label class="flex items-center gap-2 min-w-0 cursor-pointer">
+            <input type="checkbox" data-bp-cat="${esc(c.category)}" ${on ? 'checked' : ''}
+                   class="accent-mint-500 w-4 h-4 shrink-0">
+            <span class="font-medium truncate">${esc(c.category)}
+              <span class="text-slate-500 text-xs">· ${c.txns} txn${c.txns === 1 ? '' : 's'}${on ? ` · ${share}% of shown` : ' · excluded'}</span></span>
+          </label>
           ${right}
         </div>
         <div class="relative h-3 rounded-full bg-ink-700 overflow-hidden">
           <div class="absolute inset-y-0 left-0 rounded-full" style="width:${Math.min(100, spentW)}%;background:${barColor}"></div>
-          ${c.budget ? `<div class="absolute inset-y-0" style="left:${Math.min(100, budgetW)}%;width:2px;background:#e2e8f0" title="budget"></div>` : ''}
+          ${on && c.budget ? `<div class="absolute inset-y-0" style="left:${Math.min(100, budgetW)}%;width:2px;background:#e2e8f0" title="budget"></div>` : ''}
         </div>
-        ${c.over_budget ? `<div class="text-[11px] text-rose-300 mt-0.5">Over by ${inr0(-c.remaining)}</div>` : ''}
+        ${on && c.over_budget ? `<div class="text-[11px] text-rose-300 mt-0.5">Over by ${inr0(-c.remaining)}</div>` : ''}
       </div>`;
   }).join('') || '<div class="text-slate-500 text-sm">No spending recorded this month.</div>';
 }
+
+/* Year + month pickers, driven by the months the ledger actually has. */
+function renderBudgetPeriod(a) {
+  const months = a.available_months ?? [a.month];
+  const years = [...new Set(months.map((m) => m.slice(0, 4)))];
+  const year = a.month.slice(0, 4);
+
+  $('#bp-year').innerHTML = years.map((y) =>
+    `<option value="${y}"${y === year ? ' selected' : ''}>${y}</option>`).join('');
+  $('#bp-month-pick').innerHTML = months.filter((m) => m.startsWith(year + '-')).map((m) =>
+    `<option value="${m}"${m === a.month ? ' selected' : ''}>${MONTHS[+m.slice(5, 7) - 1]}</option>`).join('');
+
+  const isCurrent = a.month === new Date().toISOString().slice(0, 7);
+  $('#bp-this-month').classList.toggle('hidden', isCurrent);
+}
+
+const budgetMonthsIn = (year) =>
+  (budgetState.data?.available_months ?? []).filter((m) => m.startsWith(year + '-'));
+
+$('#bp-year').addEventListener('change', (e) => {
+  // Keep the month you were on when the new year has it, so stepping through
+  // years compares like with like; otherwise take that year's newest month.
+  const inYear = budgetMonthsIn(e.target.value);
+  if (inYear.length === 0) return;
+  const mm = budgetState.month?.slice(5, 7);
+  budgetState.month = inYear.find((m) => m.slice(5, 7) === mm) ?? inYear[0];
+  loadBudgetPage();
+});
+$('#bp-month-pick').addEventListener('change', (e) => { budgetState.month = e.target.value; loadBudgetPage(); });
+$('#bp-this-month').addEventListener('click', () => {
+  budgetState.month = new Date().toISOString().slice(0, 7);
+  loadBudgetPage();
+});
+
+$('#bp-categories').addEventListener('change', (e) => {
+  const cat = e.target?.dataset?.bpCat;
+  if (cat === undefined) return;
+  if (e.target.checked) budgetState.excluded.delete(cat);
+  else budgetState.excluded.add(cat);
+  renderBudgetPage();
+});
+$('#bp-select-all').addEventListener('click', () => { budgetState.excluded.clear(); renderBudgetPage(); });
+$('#bp-select-none').addEventListener('click', () => {
+  budgetState.excluded = new Set((budgetState.data?.categories ?? []).map((c) => c.category));
+  renderBudgetPage();
+});
 
 function renderDashAccounts(accounts) {
   const row = (a, cls) => `
@@ -964,6 +1085,28 @@ async function loadLedger() {
   await renderLedger();
 }
 
+/* The summary strip. Extracted so an in-place edit (changing one row's tag)
+   can refresh the totals without rebuilding every row of the table.
+
+   These totals stay RAW — they are what actually moved through the account, so
+   they reconcile with the balance. Blacklisted rows are counted here and called
+   out separately, rather than quietly dropped from a ledger. */
+function renderLedgerSummary(t) {
+  $('#ledger-summary').innerHTML = t.txns === 0 ? '' : `
+    <span class="text-slate-400">${t.txns} transaction${t.txns === 1 ? '' : 's'}</span>
+    <span class="text-mint-400">In ${inr0(t.income)}</span>
+    <span class="text-rose-300">Out ${inr0(t.expense)}</span>
+    <span class="${t.net < 0 ? 'text-rose-300' : 'text-mint-400'}">Net ${t.net >= 0 ? '+' : '−'}${inr0(Math.abs(t.net))}</span>
+    ${(t.excluded_txns || ledgerState.excluded) ? `<button id="ledger-excluded-toggle"
+        class="text-xs ${ledgerState.excluded ? 'text-amber-300 underline' : 'text-amber-300/70 underline decoration-dotted'}">
+        ⊘ ${ledgerState.excluded ? 'showing only excluded — show all' : `${t.excluded_txns} excluded from analysis`}</button>` : ''}`;
+
+  $('#ledger-excluded-toggle')?.addEventListener('click', () => {
+    ledgerState.excluded = ledgerState.excluded === '1' ? '' : '1';
+    renderLedger();
+  });
+}
+
 /** @param {boolean} quiet skip the busy veil (search-as-you-type) */
 async function renderLedger(quiet = false) {
   // Deep-linking to /ledger runs this before boot fetches accounts.
@@ -991,23 +1134,8 @@ async function renderLedger(quiet = false) {
 
   $('#ledger-export').href = '/api/transactions/export?' + ledgerQuery();
 
-  // These totals stay RAW — they are what actually moved through the account, so
-  // they reconcile with the balance. Blacklisted rows are counted here and
-  // called out separately, rather than quietly dropped from a ledger.
   const t = r.totals;
-  $('#ledger-summary').innerHTML = t.txns === 0 ? '' : `
-    <span class="text-slate-400">${t.txns} transaction${t.txns === 1 ? '' : 's'}</span>
-    <span class="text-mint-400">In ${inr0(t.income)}</span>
-    <span class="text-rose-300">Out ${inr0(t.expense)}</span>
-    <span class="${t.net < 0 ? 'text-rose-300' : 'text-mint-400'}">Net ${t.net >= 0 ? '+' : '−'}${inr0(Math.abs(t.net))}</span>
-    ${(t.excluded_txns || ledgerState.excluded) ? `<button id="ledger-excluded-toggle"
-        class="text-xs ${ledgerState.excluded ? 'text-amber-300 underline' : 'text-amber-300/70 underline decoration-dotted'}">
-        ⊘ ${ledgerState.excluded ? 'showing only excluded — show all' : `${t.excluded_txns} excluded from analysis`}</button>` : ''}`;
-
-  $('#ledger-excluded-toggle')?.addEventListener('click', () => {
-    ledgerState.excluded = ledgerState.excluded === '1' ? '' : '1';
-    renderLedger();
-  });
+  renderLedgerSummary(t);
 
   $('#ledger-truncated').classList.toggle('hidden', !r.truncated);
   if (r.truncated) {
@@ -1052,8 +1180,20 @@ async function renderLedger(quiet = false) {
       <td class="py-2 pr-3">
         <span class="${off ? 'line-through decoration-slate-600' : ''}">${esc(t.description)}</span>
         <div class="text-xs text-slate-500">
-          <button data-tag="${esc(t.category)}" class="underline decoration-dotted hover:text-slate-300">${esc(t.category)}</button>${t.is_self_transfer ? ' · self' : ''}${t.source === 'manual' ? ' · manual' : ''}${off ? ' · <span class="text-amber-300/80">excluded from analysis</span>' : ''}${chip}${invChip}
+          ${[t.is_self_transfer ? 'self' : '', t.source === 'manual' ? 'manual' : '',
+              off ? '<span class="text-amber-300/80">excluded from analysis</span>' : '']
+              .filter(Boolean).join(' · ')}${chip}${invChip}
         </div></td>
+      <td class="py-2 pr-3">
+        <div class="flex items-center gap-1">
+          <select data-tag-select="${t.id}" data-current="${esc(t.category)}" title="Change tag"
+                  class="bg-ink-700 border border-ink-600 rounded-md px-1.5 py-1 text-xs max-w-[9.5rem]">
+            <option value="${esc(t.category)}" selected>${esc(t.category)}</option>
+          </select>
+          <button data-tag="${esc(t.category)}" title="Filter the ledger by this tag"
+                  class="text-slate-500 hover:text-slate-200 px-1 leading-none text-sm">&#8981;</button>
+        </div>
+      </td>
       <td class="py-2 pr-3 text-slate-500 text-xs">
         <span class="flex items-center gap-1.5">${accountDot(t.account_color)}<span class="truncate">${esc(t.account_name)}</span></span>
       </td>
@@ -1202,6 +1342,86 @@ document.addEventListener('click', (e) => {
   if (!e.target?.closest?.('#ledger-category-wrap')) openTagMenu(false);
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') openTagMenu(false); });
+
+/* ---- inline tag editing ----
+   Each row carries a real <select>, but it holds ONLY its current value until
+   you touch it. Rendering all 35 categories into every one of up to 1000 rows
+   would be 35,000 <option> nodes and ~1.6 MB of markup — measured at ~10x the
+   render cost of the one-option version — for a list you only ever see one of
+   at a time. They are filled in on first interaction instead.
+
+   The save goes through /api/transactions/bulk rather than PATCH because that
+   endpoint also pins tag_source='manual'. Without that pin a later retag pass
+   would be free to overwrite the category you just chose. Neither route touches
+   the amount, the hash or the balance, so nothing is recomputed. */
+function fillTagOptions(sel) {
+  if (sel.dataset.filled === '1') return;
+  const current = sel.dataset.current;
+  sel.innerHTML = CATEGORIES.map((c) =>
+    `<option value="${c}"${c === current ? ' selected' : ''}>${c}</option>`).join('');
+  // A category no longer in the enum (renamed, or seeded differently) would
+  // otherwise silently vanish from the row and look like a blank tag.
+  if (!CATEGORIES.includes(current)) {
+    sel.insertAdjacentHTML('afterbegin', `<option value="${esc(current)}" selected>${esc(current)}</option>`);
+  }
+  sel.value = current;
+  sel.dataset.filled = '1';
+}
+
+$('#ledger-rows').addEventListener('mousedown', (e) => {
+  const sel = e.target.closest('[data-tag-select]');
+  if (sel) fillTagOptions(sel);
+}, true);
+$('#ledger-rows').addEventListener('focusin', (e) => {
+  const sel = e.target.closest('[data-tag-select]');
+  if (sel) fillTagOptions(sel);
+});
+
+$('#ledger-rows').addEventListener('change', async (e) => {
+  const sel = e.target.closest('[data-tag-select]');
+  if (!sel) return;
+  const id = +sel.dataset.tagSelect;
+  const previous = sel.dataset.current;
+  const chosen = sel.value;
+  if (chosen === previous) return;
+
+  sel.disabled = true;
+  const r = await api('/api/transactions/bulk', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: [id], category: chosen }), quiet: true,
+  });
+  sel.disabled = false;
+
+  if (!r.ok || (r.body.updated ?? 0) < 1) {
+    sel.value = previous;                       // put it back; the row is unchanged
+    alert(r.body?.message ?? 'Could not change the tag.');
+    return;
+  }
+
+  // Keep the row's own state in step so the filter button and a later edit
+  // both see the new value without a full re-render.
+  sel.dataset.current = chosen;
+  const row = lastLedger.find((t) => t.id === id);
+  if (row) { row.category = chosen; row.tag_source = 'manual'; }
+  const filterBtn = sel.parentElement.querySelector('[data-tag]');
+  if (filterBtn) filterBtn.dataset.tag = chosen;
+
+  // The summary totals and the tag filter counts are now stale. Refresh quietly
+  // (no busy veil) unless the row would drop out of the current tag filter, in
+  // which case a full re-render is what the user expects to see.
+  const tags = selectedTags();
+  if (tags.length && !tags.includes(chosen)) renderLedger(true);
+  else refreshLedgerTotals();
+});
+
+/** Re-pull just the totals/filter counts after an in-place tag change. */
+async function refreshLedgerTotals() {
+  const r = await api('/api/transactions?' + ledgerQuery(), { quiet: true });
+  if (!r.ok) return;
+  ledgerOptions = r.body.filters;
+  renderLedgerSummary(r.body.totals);
+  renderTagFilter();
+}
 
 let ledgerSearchTimer;
 $('#ledger-search').addEventListener('input', (e) => {

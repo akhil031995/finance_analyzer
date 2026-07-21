@@ -121,7 +121,31 @@ final class BudgetService
                 'categories_tracked'   => count($budgets),
                 'categories_spending'  => count($spend),
             ],
+            // Months the ledger actually holds, newest first, so the page can
+            // offer a period picker without inventing empty months.
+            'available_months' => $this->availableMonths(),
         ];
+    }
+
+    /**
+     * Every month with at least one transaction, newest first. The current month
+     * is included even when nothing has been spent yet, so the page never opens
+     * on a month it cannot offer.
+     *
+     * @return list<string> 'YYYY-MM'
+     */
+    private function availableMonths(): array
+    {
+        $months = $this->pdo->query(
+            "SELECT DISTINCT strftime('%Y-%m', txn_date) m FROM transactions ORDER BY m DESC"
+        )->fetchAll(PDO::FETCH_COLUMN);
+
+        $now = date('Y-m');
+        if (!in_array($now, $months, true)) {
+            array_unshift($months, $now);
+        }
+
+        return array_values($months);
     }
 
     public function upsert(string $category, int $amountPaise): void

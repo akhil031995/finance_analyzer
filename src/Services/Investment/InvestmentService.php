@@ -82,11 +82,19 @@ final class InvestmentService
         ];
     }
 
-    /** Portfolio rollup across every holding. */
-    public function portfolio(?DateTimeImmutable $today = null): array
+    /**
+     * Portfolio rollup across every holding.
+     *
+     * `$rows` lets a caller that has already built the list pass it in — the
+     * index endpoint returns both, and recomputing meant running every
+     * holding's XIRR and valuation queries twice per request.
+     *
+     * @param list<array<string,mixed>>|null $rows result of listInvestments()
+     */
+    public function portfolio(?DateTimeImmutable $today = null, ?array $rows = null): array
     {
         $today ??= new DateTimeImmutable('today');
-        $rows = $this->listInvestments($today);
+        $rows ??= $this->listInvestments($today);
 
         $invested = 0;
         $current  = 0;

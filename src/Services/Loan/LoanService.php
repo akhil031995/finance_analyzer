@@ -114,9 +114,15 @@ final class LoanService
     /**
      * Where the loan stands right now.
      *
-     * `outstanding` is the closing balance after the last instalment due BEFORE
-     * the 1st of the current month — i.e. everything from this month onward is
-     * still owed. This is the number that becomes the liability in net worth.
+     * `outstanding` is the closing balance after the last instalment that has
+     * SETTLED: either it fell due before the 1st of this month, or a real
+     * payment has been linked to it. The second half matters — an instalment
+     * paid on the 16th of this month, or a prepayment made on the 11th, is money
+     * that has already left, and carrying last month's balance after it would
+     * overstate the debt for the rest of the month. A loan cleared by a
+     * prepayment therefore reads zero the day it is cleared, not next month.
+     *
+     * This is the number that becomes the liability in net worth.
      *
      * `remaining_payments` (principal + all future interest) is deliberately a
      * separate figure. You only owe that interest if you keep the loan alive, so
@@ -131,7 +137,6 @@ final class LoanService
         $monthStart = $today->format('Y-m-01');
         $todayKey   = $today->format('Y-m-d');
 
-        $outstanding       = 0;
         $remainingPayments = 0;
         $remainingInterest = 0;
         $paidCount = $unpaidCount = $overdueCount = 0;
@@ -149,12 +154,11 @@ final class LoanService
                 $currentEmi      = (int) $p['emi'];
                 $currentIsPreEmi = (bool) ($p['is_pre_emi'] ?? false);
             }
-            // Last instalment that fell entirely before this month sets the
-            // balance we carry into it.
-            if ($p['due_date'] < $monthStart) {
-                $outstanding = (int) $p['closing_balance'];
-            } else {
-                $remainingPayments += (int) $p['emi'] + (int) $p['prepayment'];
+            // What is still owed excludes anything already settled — and a
+            // prepayment made inside an unsettled instalment has still left.
+            if (!self::isSettled($p, $monthStart, $todayKey)) {
+                $remainingPayments += (int) $p['emi'] + (int) $p['prepayment']
+                    - self::prepaidBy($p, $todayKey);
                 $remainingInterest += (int) $p['interest'];
             }
 
@@ -173,10 +177,7 @@ final class LoanService
             }
         }
 
-        // The very first instalment is not yet due: nothing has been repaid.
-        if ($periods !== [] && $periods[0]['due_date'] >= $monthStart) {
-            $outstanding = (int) $periods[0]['opening_balance'];
-        }
+        $outstanding = self::balanceAsOf($periods, $todayKey);
 
         return [
             'as_of'              => $todayKey,
@@ -195,6 +196,81 @@ final class LoanService
             // it "EMI" on screen would be a lie.
             'current_is_pre_emi' => $currentIsPreEmi,
         ];
+    }
+
+    /**
+     * The principal outstanding on a given date.
+     *
+     * Both `position()` (for today) and `debtOn()` (for every point on the
+     * net-worth curve) run through here, so the two can never drift apart: the
+     * curve's last point is by construction the balance the loan account holds.
+     *
+     * Periods must already have been through overlayPayments(); without it
+     * nothing is ever "paid" and this degrades to the old due-date-only rule,
+     * which is the correct reading of a schedule with no payments linked.
+     *
+     * @param list<array<string,mixed>> $periods
+     */
+    private static function balanceAsOf(array $periods, string $asOf): int
+    {
+        if ($periods === []) {
+            return 0;
+        }
+        $monthStart = substr($asOf, 0, 7) . '-01';
+
+        // Nothing has fallen due or been paid yet => the full opening drawdown.
+        $carried = null;
+        $landed  = 0;
+
+        foreach ($periods as $p) {
+            if (self::isSettled($p, $monthStart, $asOf)) {
+                $carried = (int) $p['closing_balance'];
+                // A settled closing balance already nets off every prepayment up
+                // to it, so anything counted from an earlier unsettled period
+                // would be double-counted.
+                $landed = 0;
+                continue;
+            }
+            $landed += self::prepaidBy($p, $asOf);
+        }
+
+        return max(0, ($carried ?? (int) $periods[0]['opening_balance']) - $landed);
+    }
+
+    /**
+     * Has this instalment already happened? True when it fell due before the
+     * month containing $asOf, or when a real payment was linked to it on or
+     * before $asOf. "Paid" always means money left the account, never that the
+     * calendar passed the due date — see overlayPayments().
+     *
+     * @param array<string,mixed> $period
+     */
+    private static function isSettled(array $period, string $monthStart, string $asOf): bool
+    {
+        if ($period['due_date'] < $monthStart) {
+            return true;
+        }
+        $paidOn = $period['payment']['paid_on'] ?? null;
+
+        return $paidOn !== null && (string) $paidOn <= $asOf;
+    }
+
+    /**
+     * Prepayments recorded inside this instalment that had already been made by
+     * $asOf. The instalment itself may still be owed; the lump sum is gone.
+     *
+     * @param array<string,mixed> $period
+     */
+    private static function prepaidBy(array $period, string $asOf): int
+    {
+        $sum = 0;
+        foreach ($period['prepayment_detail'] ?? [] as $pp) {
+            if ((string) $pp['date'] <= $asOf) {
+                $sum += (int) $pp['amount'];
+            }
+        }
+
+        return $sum;
     }
 
     /**
@@ -852,10 +928,9 @@ final class LoanService
      *
      * A loan account carries no ledger rows, so its debt cannot be walked out of
      * `transactions` like every other account — it has to come from the schedule.
-     * The rule is exactly `position()`'s, so the point for today equals the
-     * `current_balance` that `sync()` writes, and the net-worth curve's last
-     * point reconciles with `v_net_worth`: the closing balance after the last
-     * instalment that fell due **before the 1st of that date's month**.
+     * The rule is exactly `position()`'s — both call balanceAsOf() — so the
+     * point for today equals the `current_balance` that `sync()` writes and the
+     * net-worth curve's last point reconciles with `v_net_worth`.
      *
      * Zero before the first rupee was drawn — a loan taken in 2022 must not
      * appear as debt in 2019. A loan that will not amortise contributes its last
@@ -879,7 +954,13 @@ final class LoanService
             $events = $this->events($loanId);
 
             try {
-                $periods = $this->engine->run($loan, $events)['periods'];
+                // Overlaid, so a point lands after an instalment that was
+                // actually paid that month rather than waiting for the 1st.
+                $periods = $this->overlayPayments(
+                    $this->engine->run($loan, $events)['periods'],
+                    $this->payments($loanId),
+                    new DateTimeImmutable('today')
+                );
             } catch (RuntimeException) {
                 $flat = (int) $row['current_balance'];
                 $curves[] = static fn (string $d): int => $flat;
@@ -898,23 +979,13 @@ final class LoanService
                 'effective_date'
             );
             $drawnFrom = $drawn === [] ? (string) $loan['start_date'] : min($drawn);
-            $opening   = (int) $periods[0]['opening_balance'];
 
-            $curves[] = static function (string $date) use ($periods, $drawnFrom, $opening): int {
-                $monthStart = substr($date, 0, 7) . '-01';
+            $curves[] = static function (string $date) use ($periods, $drawnFrom): int {
                 if ($date < $drawnFrom) {
                     return 0;               // the loan did not exist yet
                 }
-                $out = null;
-                foreach ($periods as $p) {
-                    if ($p['due_date'] < $monthStart) {
-                        $out = (int) $p['closing_balance'];
-                    } else {
-                        break;              // periods are chronological
-                    }
-                }
 
-                return $out ?? $opening;    // drawn, but nothing has fallen due yet
+                return self::balanceAsOf($periods, $date);
             };
         }
 

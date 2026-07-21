@@ -32,7 +32,15 @@ final class BudgetController
 
     public function analysis(Request $request, Response $response): Response
     {
-        $month = $request->getQueryParams()['month'] ?? null;
+        // A malformed month used to reach strtotime() and 500. Anything that is
+        // not a real YYYY-MM falls back to the current month, the same way the
+        // ledger widens an out-of-range month rather than erroring.
+        $raw   = (string) ($request->getQueryParams()['month'] ?? '');
+        $month = null;
+        if (preg_match('/^(\d{4})-(\d{2})$/', $raw, $m) === 1
+            && (int) $m[2] >= 1 && (int) $m[2] <= 12) {
+            $month = $raw;
+        }
 
         return $this->json($response, (new BudgetService($this->pdo))->analysis($month));
     }

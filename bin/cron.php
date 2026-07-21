@@ -40,10 +40,10 @@ $loans = new App\Services\Loan\LoanService($pdo);
  * on write. Guarded by a settings row so a container restart does not re-run it,
  * and so the once-a-minute tick does not amortise every loan sixty times an hour.
  */
-$syncLoans = function () use ($pdo, $loans): void {
+$syncLoans = function (bool $force = false) use ($pdo, $loans): void {
     $today = date('Y-m-d');
     $last  = $pdo->query("SELECT value FROM settings WHERE key = 'loans_synced_on'")->fetchColumn();
-    if ($last === $today) {
+    if (!$force && $last === $today) {
         return;
     }
 
@@ -84,6 +84,12 @@ $tick = function () use ($pdo, $reminders, $daily, $syncLoans): void {
             fwrite(STDOUT, '[' . date('c') . "] daily summary sent=" . ($r['sent'] ? 'yes' : 'no(unconfigured)')
                 . ', milestones=' . count($r['new_milestones']) . "\n");
         }
+
+        // Fold the write-ahead log back into the database. WAL only checkpoints
+        // automatically when a writer happens to cross the threshold, and this
+        // app's writes are bursty (an import, then hours of reads), so it had
+        // grown to 4 MB. Doing it here keeps it off the request path.
+        $pdo->query('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (Throwable $e) {
         fwrite(STDERR, '[' . date('c') . '] cron error: ' . $e->getMessage() . "\n");
     }
@@ -110,6 +116,16 @@ function summarySentToday(PDO $pdo): bool
 }
 
 $loop = in_array('--loop', $_SERVER['argv'] ?? [], true);
+
+// The daily guard assumes the only thing that moves a balance is the calendar.
+// It isn't: changing how the balance is DERIVED moves every loan at once, and
+// the guard would then sit on the stale figures until tomorrow. This re-derives
+// on demand — run it once after deploying a change to the amortisation rules.
+if (in_array('--sync-loans', $_SERVER['argv'] ?? [], true)) {
+    $syncLoans(true);
+    fwrite(STDOUT, "loan balances re-derived\n");
+    exit(0);
+}
 
 // Reminders and the daily summary run at most once per wall-clock minute.
 $lastMinute = '';

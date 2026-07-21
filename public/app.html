@@ -913,12 +913,23 @@ tailwind.config = {
     </div>
 
     <div id="budget-page-body" class="space-y-6">
+      <!-- Period picker. Year + month, like Analytics: one combined list would
+           be ~91 entries. Only months the ledger holds are offered. -->
+      <div class="flex flex-wrap items-center gap-2">
+        <select id="bp-year" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm"></select>
+        <select id="bp-month-pick" class="bg-ink-700 border border-ink-600 rounded-lg px-3 py-2 text-sm"></select>
+        <button id="bp-this-month" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-3 py-2 text-sm">This month</button>
+      </div>
+
       <!-- Overall hero -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="bg-gradient-to-br from-ink-800 to-ink-700 rounded-2xl p-6 border border-ink-600 lg:col-span-2">
-          <div class="flex items-center justify-between mb-1">
-            <div class="text-sm text-slate-400">Spent this month <span id="bp-month" class="text-slate-500"></span></div>
-            <span id="bp-pace" class="chip"></span>
+          <div class="flex items-center justify-between mb-1 gap-2">
+            <div class="text-sm text-slate-400"><span id="bp-spent-label">Spent this month</span> <span id="bp-month" class="text-slate-500"></span></div>
+            <div class="flex items-center gap-2">
+              <span id="bp-filter-note" class="hidden chip bg-amber-500/20 text-amber-300 whitespace-nowrap"></span>
+              <span id="bp-pace" class="chip"></span>
+            </div>
           </div>
           <div class="flex items-baseline gap-2">
             <span id="bp-spent" class="text-4xl font-bold tracking-tight">₹0</span>
@@ -927,24 +938,34 @@ tailwind.config = {
           <div class="h-2.5 rounded-full bg-ink-700 overflow-hidden mt-4">
             <div id="bp-bar" class="h-full rounded-full transition-all" style="width:0%"></div>
           </div>
-          <div class="grid grid-cols-3 gap-3 mt-4 text-center">
-            <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Daily budget</div><div id="bp-daily" class="font-semibold text-sm mt-0.5"></div></div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 text-center">
+            <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Daily budget</div><div id="bp-daily" class="font-semibold text-sm mt-0.5"></div><div class="text-[10px] text-slate-500">allowed</div></div>
+            <!-- What you are actually burning per elapsed day, next to the allowance. -->
+            <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Actual / day</div><div id="bp-actual-daily" class="font-semibold text-sm mt-0.5"></div><div id="bp-actual-daily-sub" class="text-[10px] text-slate-500"></div></div>
             <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Left this month</div><div id="bp-remaining" class="font-semibold text-sm mt-0.5"></div></div>
             <div class="bg-ink-700/50 rounded-lg py-2"><div class="text-[11px] text-slate-400">Spendable / day</div><div id="bp-daily-remaining" class="font-semibold text-sm mt-0.5"></div><div id="bp-days-left" class="text-[10px] text-slate-500"></div></div>
           </div>
         </div>
         <div class="grid grid-cols-2 lg:grid-cols-1 gap-3">
           <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600"><div class="text-xs text-slate-400">Total budgeted</div><div id="bp-total-budgeted" class="text-2xl font-semibold mt-1">₹0</div><div class="text-[11px] text-slate-500 mt-0.5">across tracked categories</div></div>
-          <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600"><div class="text-xs text-slate-400">Categories spending</div><div id="bp-cat-count" class="text-2xl font-semibold mt-1">0</div><div class="text-[11px] text-slate-500 mt-0.5">this month</div></div>
+          <div class="bg-ink-800 rounded-2xl p-4 border border-ink-600"><div class="text-xs text-slate-400">Categories spending</div><div id="bp-cat-count" class="text-2xl font-semibold mt-1">0</div><div class="text-[11px] text-slate-500 mt-0.5">in this period</div></div>
         </div>
       </div>
 
       <!-- Per-category expense analysis -->
       <div class="bg-ink-800 rounded-2xl p-5 border border-ink-600">
-        <div class="flex items-center justify-between mb-4 gap-3">
+        <div class="flex flex-wrap items-center justify-between mb-1 gap-3">
           <h2 class="font-semibold">Spending by category vs budget</h2>
-          <span class="text-xs text-slate-500">this month</span>
+          <div class="flex items-center gap-2 text-xs">
+            <span id="bp-selected-count" class="text-slate-500"></span>
+            <button id="bp-select-all" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-2.5 py-1">All</button>
+            <button id="bp-select-none" class="bg-ink-700 border border-ink-600 hover:bg-ink-600 rounded-lg px-2.5 py-1">None</button>
+          </div>
         </div>
+        <p class="text-xs text-slate-500 mb-4">
+          Untick a category to take it out of every figure above — useful for seeing what you spend
+          once a fixed cost like EMI is set aside. Nothing is saved; this only changes what is shown.
+        </p>
         <div id="bp-categories" class="space-y-4"></div>
       </div>
     </div>
@@ -1222,6 +1243,7 @@ tailwind.config = {
           <thead><tr class="text-left text-slate-500 border-b border-ink-600">
             <th class="py-2 pr-2 w-8"><input id="ledger-select-all" type="checkbox" class="accent-mint-500 w-4 h-4 align-middle" title="Select all rows shown"></th>
             <th class="py-2 pr-3">Date</th><th class="py-2 pr-3">Description</th>
+            <th class="py-2 pr-3">Tag</th>
             <th class="py-2 pr-3">Account</th><th class="py-2 pr-3">Mode</th>
             <th class="py-2 pr-3 text-right">Amount</th>
             <th id="ledger-balance-head" class="hidden py-2 pr-3 text-right">Balance</th>

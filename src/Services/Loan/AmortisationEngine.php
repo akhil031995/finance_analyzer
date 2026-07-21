@@ -263,7 +263,12 @@ final class AmortisationEngine
             }
 
             // --- Prepayments land after the EMI, at the monthly rest ----------
+            // The per-prepayment dates are kept alongside the month's total: an
+            // instalment is a month wide, and a prepayment made on the 11th is
+            // money already gone even though the instalment is not due till the
+            // 18th. position() needs the dates to tell those two apart.
             $prepaidThisMonth = 0;
+            $prepaidDetail    = [];
             foreach ($prepayments as $pp) {
                 if (($applied[$pp['_key']] ?? false) || $outstanding <= 0) {
                     continue;
@@ -282,6 +287,7 @@ final class AmortisationEngine
                 $outstanding      -= $amount;
                 $prepaidThisMonth += $amount;
                 $prepaidTotal     += $amount;
+                $prepaidDetail[]  = ['date' => (string) $pp['effective_date'], 'amount' => $amount];
 
                 // reduce_emi holds the loan's ORIGINAL end date and drops the
                 // instalment; reduce_tenure (the default, and the cheaper one)
@@ -299,7 +305,8 @@ final class AmortisationEngine
                 'emi'             => $payment,
                 'interest'        => $interest,
                 'principal'       => $princip,
-                'prepayment'      => $prepaidThisMonth,
+                'prepayment'        => $prepaidThisMonth,
+                'prepayment_detail' => $prepaidDetail,
                 'closing_balance' => $outstanding,
                 'rate_apr'        => round($rate, 4),
                 'is_stub'         => $isStub,

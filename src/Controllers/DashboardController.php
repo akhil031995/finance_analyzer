@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Services\Loan\LoanService;
-use App\Services\SnapshotService;
 use PDO;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -22,6 +21,9 @@ use Psr\Http\Message\ServerRequestInterface as Request;
  */
 final class DashboardController
 {
+    /** How many recent complete months the "monthly average" card averages over. */
+    private const AVERAGE_MONTHS = 12;
+
     public function __construct(private PDO $pdo, private LoanService $loans)
     {
     }
@@ -31,9 +33,13 @@ final class DashboardController
         $netWorth  = $this->netWorth();
         $months    = $this->monthlySeries();
 
-        // Persist any newly-crossed milestones so reached rungs carry a date
-        // even before the daily cron runs (idempotent — inserts only new ones).
-        (new SnapshotService($this->pdo))->detectMilestones();
+        // Milestones are NOT detected here. This is a GET, and crossing one wrote
+        // to the database on the request path — an fsync this box pays ~680 ms
+        // for. DailySummaryService::sendDaily() calls detectMilestones() before
+        // it composes or sends anything, so cron records them once a day
+        // regardless of whether Telegram is configured. A rung still renders as
+        // "reached" the instant net worth passes it (that is derived from the
+        // live figure); only its achieved_on date waits for the nightly run.
 
         $payload = [
             'net_worth'   => $netWorth,
@@ -123,6 +129,15 @@ final class DashboardController
         // Monthly average across complete months (exclude the latest, which is
         // usually partial) when we have more than one month of data.
         $complete = count($months) > 1 ? array_slice($months, 0, -1) : $months;
+
+        // ...but only the most recent AVERAGE_MONTHS of them. Averaging the whole
+        // ledger answers a question nobody asks: this one goes back to 2019, and
+        // 25 of those months predate the first loan, which dragged the EMI share
+        // down to 28% when it is really about two thirds of the outgo. A rolling
+        // year is long enough to absorb an unusual month and short enough to
+        // describe the life you are actually living.
+        $complete = array_slice($complete, -self::AVERAGE_MONTHS);
+
         $monthlyExpense = $complete === []
             ? 0
             : (int) round(array_sum(array_column($complete, 'expense')) / count($complete));
@@ -130,6 +145,10 @@ final class DashboardController
         // EMI is an ordinary expense — it is not in `excluded_categories` — and on
         // a ledger carrying three loans it dominates the average. Split it out:
         // the EMI is contractual, the rest is the part you can actually steer.
+        //
+        // A lump-sum prepayment tagged `emi` is counted here as EMI rather than
+        // separated out. It is a deliberate simplification: the month you pay one
+        // off reads high, but every rupee is still a rupee that left.
         $emiByMonth = [];
         foreach ($this->pdo->query(
             "SELECT strftime('%Y-%m', txn_date) m, SUM(amount) s

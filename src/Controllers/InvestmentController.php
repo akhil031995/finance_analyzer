@@ -37,9 +37,13 @@ final class InvestmentController
 
     public function index(Request $request, Response $response): Response
     {
+        // Build the list once and hand it to portfolio(), which would otherwise
+        // recompute every holding's XIRR and valuations a second time.
+        $investments = $this->inv->listInvestments();
+
         return $this->json($response, [
-            'investments' => $this->inv->listInvestments(),
-            'portfolio'   => $this->inv->portfolio(),
+            'investments' => $investments,
+            'portfolio'   => $this->inv->portfolio(null, $investments),
             'types'       => InvestmentService::TYPES,
             'default_rates' => InvestmentService::DEFAULT_RATES,
         ]);

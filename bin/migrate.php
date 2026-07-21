@@ -3,10 +3,29 @@
 declare(strict_types=1);
 
 /**
- * Idempotent schema migration: applies database/schema.sql to the SQLite DB.
- * Safe to run on every boot — the schema uses IF NOT EXISTS / INSERT OR IGNORE.
+ * Schema migration: applies database/schema.sql to the SQLite DB.
  * Usable standalone (`php bin/migrate.php`) or via require from the app.
+ *
+ * This file is `require`d on EVERY HTTP request (public/index.php), so it is
+ * split into two halves:
+ *
+ *   1. Connection setup — always runs. SQLite PRAGMAs like foreign_keys and
+ *      synchronous are per-CONNECTION, not stored in the file, so they have to
+ *      be re-applied every time or cascades silently stop working.
+ *
+ *   2. DDL — gated behind a fingerprint of schema.sql. Re-running the DDL was
+ *      costing ~3.2 s per request: `CREATE TABLE IF NOT EXISTS` still parses,
+ *      the seed `INSERT OR IGNORE`s still open write transactions, and the two
+ *      analytics views were DROPped and recreated unconditionally. Every one of
+ *      those writes fsyncs, and an fsync on this box's 5400rpm disk costs
+ *      ~680 ms. Now the DDL runs only when schema.sql (or MIGRATION_REVISION)
+ *      actually changes, which is what "idempotent" was always meant to mean.
+ *
+ * Pass --force to re-apply the DDL regardless.
  */
+
+/** Bump when the PHP-side migration steps below change without schema.sql changing. */
+const MIGRATION_REVISION = 1;
 
 $root   = dirname(__DIR__);
 $dbPath = getenv('DB_PATH') ?: ($_ENV['DB_PATH'] ?? $root . '/data/finance.sqlite');
@@ -25,6 +44,35 @@ if (!is_dir($dir)) {
 $pdo = new PDO('sqlite:' . $dbPath, options: [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
 ]);
+
+// ---------------------------------------------------------------- connection
+// Always applied. These are per-connection and cost nothing (no disk I/O).
+//
+// foreign_keys: OFF is SQLite's default. Every ON DELETE CASCADE in this app
+//   (loan events, loan_payments, investment_*) depends on this being ON.
+// synchronous NORMAL: safe under WAL — a crashed process cannot corrupt the
+//   database, only a power loss / OS crash can cost the last commit(s). FULL
+//   fsyncs on every single commit, which is ruinous on a spinning disk.
+// busy_timeout: wait rather than throw when the cron container holds the lock.
+$pdo->exec('PRAGMA foreign_keys = ON');
+$pdo->exec('PRAGMA synchronous = NORMAL');
+$pdo->exec('PRAGMA busy_timeout = 60000');
+
+// ----------------------------------------------------------------- DDL gate
+$schemaSql = (string) file_get_contents($root . '/database/schema.sql');
+$stamp     = sha1($schemaSql) . '.' . MIGRATION_REVISION;
+$force     = in_array('--force', $_SERVER['argv'] ?? [], true);
+
+$applied = null;
+try {
+    $applied = $pdo->query("SELECT value FROM settings WHERE key = 'schema_stamp'")->fetchColumn();
+} catch (PDOException) {
+    // Fresh database: no settings table yet. Fall through and build everything.
+}
+
+if (!$force && $applied === $stamp) {
+    return $pdo;   // schema already current — the hot path, zero writes
+}
 
 /**
  * Additive column migrations. These run BEFORE schema.sql, because the analytics
@@ -87,7 +135,11 @@ if (is_string($sql) && !str_contains($sql, 'disbursement')) {
     $pdo->exec('PRAGMA foreign_keys = ON');
 }
 
-$pdo->exec(file_get_contents($root . '/database/schema.sql'));
+// The views are still DROPped and recreated here rather than made
+// CREATE VIEW IF NOT EXISTS: a changed view body MUST replace the stored one,
+// and IF NOT EXISTS would silently keep the stale definition. The gate above is
+// what makes this cheap — it now happens only when schema.sql actually changes.
+$pdo->exec($schemaSql);
 
 // Give every uncoloured account a palette colour, in id order, so no two open
 // with the same swatch. Runs after schema.sql so a fresh database has the table.
@@ -107,6 +159,11 @@ if (class_exists(App\Support\Palette::class)) {
         }
     }
 }
+
+// Record the fingerprint last, so a migration that dies part-way is retried
+// rather than being marked done.
+$pdo->prepare("INSERT INTO settings (key, value) VALUES ('schema_stamp', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value")->execute([$stamp]);
 
 if (PHP_SAPI === 'cli' && realpath($_SERVER['argv'][0] ?? '') === __FILE__) {
     echo "Schema applied to {$dbPath}\n";

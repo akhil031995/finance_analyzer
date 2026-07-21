@@ -8,8 +8,8 @@ services:
       network: host      # composer install needs working DNS at build time
     container_name: finance_app
     dns: [1.1.1.1, 8.8.8.8]
-    # ports:
-    #   - "8899:80"        # host 8899 -> Apache listens on 80 inside the container
+    ports:
+      - "8899:80"        # host 8899 -> Apache listens on 80 inside the container
     env_file: .env
     environment:
       DB_PATH: /var/www/html/data/finance.sqlite
